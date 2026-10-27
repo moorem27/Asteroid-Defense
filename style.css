@@ -1,0 +1,310 @@
+:root {
+    --cyan: #42f5f2;
+    --pink: #ff3f9f;
+    --yellow: #ffe66d;
+    --background: #050713;
+    --panel: rgba(7, 12, 35, 0.92);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+/* ============================================================
+   NO ACCIDENTAL COPY / PASTE ON PHONES
+   Long-pressing or double-tapping during play would otherwise
+   select HUD text and pop up the copy / paste / look-up menu.
+   ============================================================ */
+
+html,
+body,
+body * {
+    /* No text selection (and so no copy / paste handles). */
+    -webkit-user-select: none;
+    user-select: none;
+
+    /* No iOS long-press callout (copy, look up, save image). */
+    -webkit-touch-callout: none;
+
+    /* No grey flash over tapped elements on Android / iOS. */
+    -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+    /* No pinch-zoom, double-tap zoom or pull-to-refresh while
+       playing. The game canvas already sets this for itself. */
+    touch-action: none;
+    overscroll-behavior: none;
+
+    /* Stops iOS enlarging text after rotating the phone. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
+/* The start and game-over panels scroll on short screens, so they
+   still allow vertical swipes; buttons must still respond to taps. */
+#start-screen,
+#game-over {
+    touch-action: pan-y;
+}
+
+.arcade-button {
+    touch-action: manipulation;
+}
+
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--background);
+    color: white;
+    font-family: "Press Start 2P", monospace;
+}
+
+#game-container {
+    position: fixed;
+    inset: 0;
+}
+
+#game-container canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* ============================================================ TOP HUD ============================================================ */
+
+#hud { position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+
+display: grid;
+grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+align-items: start;
+gap: 12px;
+
+padding: 18px 24px;
+pointer-events: none;
+
+
+}
+
+/* ============================================================ BOTTOM HUD ============================================================ */
+
+#bottom-hud { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2;
+
+display: grid;
+grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+align-items: end;
+gap: 12px;
+
+padding: 18px 24px;
+pointer-events: none;
+
+
+}
+
+/* ============================================================ HUD ELEMENTS ============================================================ */
+
+.hud-block { min-width: 0; }
+
+.hud-center { text-align: center; justify-self: center; }
+
+.hud-right { text-align: right; justify-self: end; }
+
+.hud-label { margin-bottom: 8px; color: var(--cyan); font-size: 9px; line-height: 1.6; }
+
+.hud-value, .lives-value { font-size: 13px; line-height: 1.6; }
+
+.lives-value { color: var(--pink); white-space: nowrap; }
+
+.game-logo { font-size: clamp(12px, 1.8vw, 20px); line-height: 1.6; white-space: nowrap; text-shadow: 0 0 12px var(--cyan); }
+
+.game-logo span { color: var(--pink); }
+
+.hud-subtitle { margin-top: 4px; color: var(--cyan); font-size: 8px; line-height: 1.6; letter-spacing: 0.5px; }
+
+#message { max-width: 300px; color: var(--yellow); font-size: 9px; line-height: 1.8; overflow-wrap: anywhere; text-shadow: 0 0 12px var(--yellow); }
+
+/* Moved out of the max-width: 360px media query, where it only
+   applied on the very smallest phones. */
+#warp-status { color: #65f5ff; font-family: monospace; font-size: 14px; font-weight: bold; text-shadow: 0 0 8px #00cfff; margin-top: 8px; }
+
+/* Match clock: time left in the 5-minute match. */
+#match-clock { margin-top: 8px; color: var(--cyan); font-size: 9px; line-height: 1.6; white-space: nowrap; text-shadow: 0 0 10px var(--cyan); }
+
+#match-clock span { color: white; }
+
+/* The last 30 seconds glow warmer and pulse. */
+#match-clock.final { color: var(--yellow); text-shadow: 0 0 12px var(--yellow); animation: match-clock-pulse 1s ease-in-out infinite alternate; }
+
+@keyframes match-clock-pulse {
+    from { opacity: 0.75; }
+    to { opacity: 1; }
+}
+
+.mission-goal { margin: 4px 0 0; color: var(--cyan); font-size: 8px; line-height: 2; overflow-wrap: anywhere; }
+
+/* ============================================================ GAME SCREENS ============================================================ */
+
+.hidden { display: none !important; }
+
+#start-screen, #game-over { position: fixed; inset: 0; z-index: 5;
+
+display: flex;
+flex-direction: column;
+align-items: center;
+justify-content: center;
+
+overflow-y: auto;
+padding: 24px;
+
+text-align: center;
+background: rgba(2, 3, 15, 0.92);
+
+
+}
+
+#start-screen.hidden, #game-over.hidden { display: none !important; }
+
+#start-screen h1, #game-over h2 { margin: 16px 0; line-height: 1.5; }
+
+#start-screen h1 { font-size: clamp(30px, 7vw, 56px); letter-spacing: -2px; text-shadow: 4px 4px 0 #4031a3; }
+
+#start-screen h1 span, #game-over h2 span { color: var(--pink); }
+
+.title-description { max-width: 100%; font-size: 9px; line-height: 2; overflow-wrap: anywhere; }
+
+.arcade-button { width: min(320px, 100%); margin: 16px 0; padding: 16px; border: 2px solid var(--pink); background: rgba(255, 63, 159, 0.09); color: white; font-family: inherit; font-size: 10px; cursor: pointer; }
+
+.arcade-button:hover { background: var(--pink); color: #080716; }
+
+.controls { margin-top: 20px; font-size: 8px; line-height: 2.2; }
+
+.controls-heading { margin-bottom: 10px; color: var(--cyan); }
+
+.control-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; }
+
+.control-description { margin-left: 6px; }
+
+.keycap { color: var(--yellow); }
+
+.panel-topline, .panel-bottomline { max-width: 100%; color: var(--cyan); font-size: 7px; line-height: 2; overflow-wrap: anywhere; }
+
+.panel-bottomline { margin-top: 20px; }
+
+.insert-coin { margin: 12px 0; color: var(--yellow); font-size: 9px; }
+
+.final-score { margin: 18px 0; color: var(--yellow); font-size: clamp(22px, 5vw, 34px); }
+
+.final-score-label { margin-top: 20px; color: var(--cyan); font-size: 9px; }
+
+.game-over-icon { margin: 12px 0; color: var(--cyan); font-size: 36px; }
+
+/* ============================================================ DAMAGE FLASH ============================================================ */
+
+#flash { position: fixed; inset: 0; z-index: 4; pointer-events: none; background: white; opacity: 0; }
+
+/* ============================================================ MOBILE HUD ============================================================ */
+
+@media (max-width: 600px) { #hud { padding: 12px 8px; gap: 4px; }
+
+#bottom-hud {
+    padding: 12px 8px;
+    gap: 4px;
+}
+
+#hud .hud-center,
+#bottom-hud .hud-center {
+    width: 100%;
+    max-width: 40vw;
+    justify-self: center;
+    text-align: center;
+}
+
+#hud .hud-right,
+#bottom-hud .hud-right {
+    justify-self: end;
+    text-align: right;
+}
+
+.game-logo {
+    font-size: clamp(9px, 3vw, 13px);
+    letter-spacing: 0;
+}
+
+.hud-subtitle {
+    max-width: 40vw;
+    margin: 3px auto 0;
+    font-size: 6px;
+    line-height: 1.6;
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+}
+
+.hud-label {
+    margin-bottom: 4px;
+    font-size: 7px;
+    line-height: 1.5;
+}
+
+.hud-value,
+.lives-value {
+    font-size: 10px;
+}
+
+#message {
+    max-width: 40vw;
+    font-size: 6px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+#match-clock {
+    font-size: 6px;
+    margin-top: 4px;
+}
+
+#start-screen,
+#game-over {
+    padding: 16px;
+}
+
+.controls {
+    font-size: 7px;
+}
+
+.title-description {
+    font-size: 8px;
+}
+
+
+}
+
+/* ============================================================ EXTRA-SMALL PHONES ============================================================ */
+
+@media (max-width: 360px) { #hud, #bottom-hud { padding-left: 5px; padding-right: 5px; gap: 3px; }
+
+.game-logo {
+    font-size: 9px;
+}
+
+.hud-subtitle {
+    font-size: 5px;
+}
+
+.hud-label {
+    font-size: 6px;
+}
+
+.hud-value,
+.lives-value {
+    font-size: 9px;
+}
+
+#message {
+    font-size: 5px;
+}
+
+}
