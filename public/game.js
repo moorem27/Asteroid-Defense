@@ -3895,6 +3895,297 @@ function updateLens(strength) {
 }
 
 // ------------------------------------------------------------
+// WARP BUBBLE LENS
+// Bends the background around a warp bubble, like light passing a
+// curved bubble of spacetime:
+//  - inside, the background is magnified, as through a glass sphere;
+//  - at the rim, light bends sharply around the bubble, with a slight
+//    rainbow fringe where the colors separate;
+//  - shimmering ripples run around it;
+//  - while flying, space looks squeezed ahead of the ship and
+//    stretched out behind it (the classic warp drive idea).
+// It works like the black hole's lens: a disc that redraws the three
+// parallax layers through a distortion. Ships, asteroids and the
+// bubble's own models are drawn on top, unchanged.
+// Used for your own warp bubble and other pilots' (multiplayer.js).
+// ------------------------------------------------------------
+
+const WARP_LENS_CONFIG = {
+    // Radius of the bubble edge (world units), where bending peaks.
+    // The bubble models are about 3.5-4.5 across.
+    radius: 4.1,
+
+    // How far past the edge the bending fades out, as a multiple of
+    // the radius.
+    outer: 1.75,
+
+    // Magnification in the middle (1 = none).
+    magnify: 1.55,
+
+    // How strongly light bends at the rim, and how wide that band is.
+    rimStrength: 0.9,
+    rimWidth: 0.55,
+
+    // Color separation at the rim (0 = none).
+    chroma: 0.07,
+
+    // Ripple size and speed.
+    rippleAmount: 0.09,
+    rippleSpeed: 5.0,
+
+    // Squeeze ahead / stretch behind at full speed.
+    flow: 0.35,
+
+    // Faint blue glow along the rim.
+    rimGlow: 0.18
+};
+
+const WARP_LENS_FRAGMENT_SHADER = /* glsl */ `
+    uniform sampler2D uNebula;
+    uniform sampler2D uFar;
+    uniform sampler2D uNear;
+
+    // Per layer (nebula, far, near): tile size, parallax factor,
+    // opacity. Must match PARALLAX_LAYERS.
+    uniform vec3 uTile;
+    uniform vec3 uFactor;
+    uniform vec3 uOpacity;
+
+    uniform vec2 uCamera;
+    uniform vec2 uCenter;
+    uniform vec2 uDir;
+    uniform float uSpeed;
+    uniform float uTime;
+    uniform float uStrength;
+
+    uniform float uRadius;
+    uniform float uOuter;
+    uniform float uMagnify;
+    uniform float uRimStrength;
+    uniform float uRimWidth;
+    uniform float uChroma;
+    uniform float uRipple;
+    uniform float uRippleSpeed;
+    uniform float uFlow;
+    uniform float uRimGlow;
+
+    varying vec2 vWorld;
+
+    // Same mapping updateParallax() uses: world point -> layer UV.
+    vec2 layerUV(vec2 p, float factor, float tile) {
+        return vec2(
+            p.x - (1.0 - factor) * uCamera.x,
+            (1.0 - factor) * uCamera.y - p.y
+        ) / tile;
+    }
+
+    // The three background layers, composited as on screen.
+    vec3 background(vec2 p) {
+        vec3 color = texture2D(uNebula, layerUV(p, uFactor.x, uTile.x)).rgb;
+
+        vec4 far = texture2D(uFar, layerUV(p, uFactor.y, uTile.y));
+        color = mix(color, far.rgb, far.a * uOpacity.y);
+
+        vec4 near = texture2D(uNear, layerUV(p, uFactor.z, uTile.z));
+        color = mix(color, near.rgb, near.a * uOpacity.z);
+
+        return color;
+    }
+
+    // Where the light seen at this point came from, as an offset from
+    // the bubble's center. k scales the bending (for color fringes).
+    vec2 bend(vec2 rel, float r, float k) {
+        vec2 dir = rel / max(r, 0.0001);
+        float x = r / uRadius;
+
+        // Inside: magnify (sample closer to the center), easing to no
+        // magnification at the rim.
+        float inside = 1.0 - smoothstep(0.0, 1.0, x);
+        float scale = mix(1.0, 1.0 / uMagnify, inside * k);
+
+        // At the rim: a sharp band where light is bent outward around
+        // the bubble, plus ripples running around it.
+        float band = exp(-pow((r - uRadius) / uRimWidth, 2.0));
+        float ripple = sin(r * 4.0 - uTime * uRippleSpeed + atan(rel.y, rel.x) * 3.0);
+
+        float push = (uRimStrength * band + uRipple * ripple * band) * k;
+
+        // Flying: squeezed ahead, stretched behind.
+        float ahead = dot(dir, uDir);
+        float flow = 1.0 - uFlow * uSpeed * ahead * (1.0 - smoothstep(uRadius, uRadius * uOuter, r));
+
+        return dir * (r * scale * flow + push);
+    }
+
+    void main() {
+        vec2 rel = vWorld - uCenter;
+        float r = length(rel);
+        float edge = uRadius * uOuter;
+
+        if (r > edge || uStrength <= 0.0) discard;
+
+        // Bending grows in with the bubble.
+        vec2 straight = rel;
+
+        vec2 bentR = mix(straight, bend(rel, r, 1.0 + uChroma), uStrength);
+        vec2 bentG = mix(straight, bend(rel, r, 1.0), uStrength);
+        vec2 bentB = mix(straight, bend(rel, r, 1.0 - uChroma), uStrength);
+
+        vec3 color = vec3(
+            background(uCenter + bentR).r,
+            background(uCenter + bentG).g,
+            background(uCenter + bentB).b
+        );
+
+        // A faint blue glow along the rim.
+        float band = exp(-pow((r - uRadius) / (uRimWidth * 1.4), 2.0));
+        color += vec3(0.25, 0.75, 1.0) * band * uRimGlow * uStrength;
+
+        // Blend into the normal background toward the outer edge.
+        float alpha = (1.0 - smoothstep(edge * 0.72, edge, r)) * uStrength;
+
+        gl_FragColor = vec4(color, alpha);
+
+        #include <colorspace_fragment>
+    }
+`;
+
+/**
+ * A warp lens: { mesh, update(x, z, dirX, dirZ, speed, strength, time,
+ * scale), dispose() }, or null if the parallax background isn't in
+ * use (the fallback single image can't be bent this way).
+ */
+function createWarpLens() {
+    const textures = PARALLAX_LAYERS.map((layer) =>
+        parallaxMeshes.find((mesh) => mesh.userData.layer.file === layer.file)
+            ?.material.map
+    );
+
+    if (textures.some((texture) => !texture)) return null;
+
+    const c = WARP_LENS_CONFIG;
+
+    const material = new THREE.ShaderMaterial({
+        vertexShader: LENS_VERTEX_SHADER,
+        fragmentShader: WARP_LENS_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false,
+        uniforms: {
+            uNebula: { value: textures[0] },
+            uFar: { value: textures[1] },
+            uNear: { value: textures[2] },
+            uTile: { value: new THREE.Vector3(...PARALLAX_LAYERS.map((l) => l.tile)) },
+            uFactor: { value: new THREE.Vector3(...PARALLAX_LAYERS.map((l) => l.factor)) },
+            uOpacity: { value: new THREE.Vector3(...PARALLAX_LAYERS.map((l) => l.opacity)) },
+            uCamera: { value: new THREE.Vector2() },
+            uCenter: { value: new THREE.Vector2() },
+            uDir: { value: new THREE.Vector2(0, 1) },
+            uSpeed: { value: 0 },
+            uTime: { value: 0 },
+            uStrength: { value: 0 },
+            uRadius: { value: c.radius },
+            uOuter: { value: c.outer },
+            uMagnify: { value: c.magnify },
+            uRimStrength: { value: c.rimStrength },
+            uRimWidth: { value: c.rimWidth },
+            uChroma: { value: c.chroma },
+            uRipple: { value: c.rippleAmount },
+            uRippleSpeed: { value: c.rippleSpeed },
+            uFlow: { value: c.flow },
+            uRimGlow: { value: c.rimGlow }
+        }
+    });
+
+    const mesh = new THREE.Mesh(parallaxGeometry, material);
+    mesh.name = "WarpLens";
+
+    // Above the parallax layers and dust, below everything else (like
+    // the black hole's lens).
+    mesh.position.y = -3.4;
+    mesh.renderOrder = -2;
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+
+    scene.add(mesh);
+
+    const uniforms = material.uniforms;
+
+    return {
+        mesh,
+
+        // strength: 0 (off) to 1 (full); scale: the bubble's grow-in.
+        update(x, z, dirX, dirZ, speed, strength, time, scale = 1) {
+            mesh.visible = strength > 0.001;
+            if (!mesh.visible) return;
+
+            const radius = c.radius * Math.max(0.05, scale);
+            const size = radius * c.outer * 2;
+
+            mesh.position.x = x;
+            mesh.position.z = z;
+            mesh.scale.set(size, 1, size);
+
+            const length = Math.hypot(dirX, dirZ);
+
+            uniforms.uCamera.value.set(cameraRig.x, cameraRig.z);
+            uniforms.uCenter.value.set(x, z);
+            uniforms.uDir.value.set(
+                length > 1e-4 ? dirX / length : 0,
+                length > 1e-4 ? dirZ / length : 1
+            );
+            uniforms.uSpeed.value = clamp(speed, 0, 1);
+            uniforms.uTime.value = time;
+            uniforms.uStrength.value = clamp(strength, 0, 1);
+            uniforms.uRadius.value = radius;
+            uniforms.uRimWidth.value = c.rimWidth * Math.max(0.05, scale);
+        },
+
+        dispose() {
+            scene.remove(mesh);
+            material.dispose();
+        }
+    };
+}
+
+// Your own bubble's lens (created once the background has loaded).
+let warpLens = null;
+
+function updateWarpLens() {
+    if (!warpLens) {
+        if (!warp.active) return;
+
+        warpLens = createWarpLens();
+        if (!warpLens) return;
+    }
+
+    if (!warp.active || !warp.group?.visible || blackHole.active) {
+        warpLens.update(0, 0, 0, 1, 0, 0, 0);
+        return;
+    }
+
+    // Grows in with the bubble and fades out with it (updateWarp
+    // animates warp.group's scale the same way).
+    const scale = warp.group.scale.x;
+    const strength = clamp(scale, 0, 1);
+
+    const top = player.speed * WARP_SPEED_MULTIPLIER;
+    const speed = Math.hypot(player.velocity.x, player.velocity.z) / top;
+
+    warpLens.update(
+        player.position.x,
+        player.position.z,
+        player.velocity.x,
+        player.velocity.z,
+        speed,
+        strength,
+        warp.elapsed,
+        Math.max(scale, 0.2)
+    );
+}
+
+
+// ------------------------------------------------------------
 // ACTIVATE BLACK HOLE
 // ------------------------------------------------------------
 
@@ -6693,6 +6984,9 @@ function render() {
     updateParallax();
     updateDust();
 
+    // Bend the background around the warp bubble.
+    updateWarpLens();
+
     // Re-aim at the point now under the cursor, ready for the next
     // frame's steering.
     refreshAim();
@@ -7937,6 +8231,7 @@ function startMultiplayer() {
                 // simply tries again on a later frame.
                 createShipModel: () => cloneModel("ship"),
                 createRocketModel,
+                createWarpLens,
                 spawnSmoke: (x, z, heading) => spawnSmokePuff(x, z, heading),
 
                 shipScale: SHIP_DISPLAY_SCALE,

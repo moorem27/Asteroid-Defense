@@ -110,6 +110,10 @@ export class Multiplayer {
         this.scene = options.scene;
         this.createShipModel = options.createShipModel;
         this.createRocketModel = options.createRocketModel ?? null;
+
+        // Optional: bends the background around other pilots' warp
+        // bubbles (game.js createWarpLens). Returns null if it can't.
+        this.createWarpLens = options.createWarpLens ?? null;
         this.spawnSmoke = options.spawnSmoke ?? null;
         this.shipScale = options.shipScale ?? 1;
         this.statusElement = options.statusElement ?? null;
@@ -884,7 +888,11 @@ export class Multiplayer {
                 t - last.t < CONFIG.hideAfterMs;
 
             if (!show) {
-                if (remote.visual) remote.visual.group.visible = false;
+                if (remote.visual) {
+                    remote.visual.group.visible = false;
+                    this.updateRemoteLens(remote.visual, null, null, false);
+                }
+
                 continue;
             }
 
@@ -913,6 +921,8 @@ export class Multiplayer {
             if (visual.bubble.visible) {
                 visual.bubble.scale.setScalar(1 + Math.sin(t / 160) * 0.05);
             }
+
+            this.updateRemoteLens(visual, pose, last, visual.bubble.visible);
         }
     }
 
@@ -1006,9 +1016,56 @@ export class Multiplayer {
         return remote.visual;
     }
 
+    // The background-bending lens around another pilot's warp bubble.
+    // It fades in and out, and is skipped if the game can't make one.
+    updateRemoteLens(visual, pose, last, warping) {
+        const target = warping ? 1 : 0;
+
+        visual.lensLevel = (visual.lensLevel ?? 0) + (target - (visual.lensLevel ?? 0)) * 0.12;
+
+        if (visual.lensLevel < 0.01 && !warping) {
+            visual.lensLevel = 0;
+            visual.lens?.update(0, 0, 0, 1, 0, 0, 0);
+            return;
+        }
+
+        if (!visual.lens) {
+            if (visual.lensUnavailable || !this.createWarpLens) return;
+
+            try {
+                visual.lens = this.createWarpLens();
+            } catch {
+                visual.lens = null;
+            }
+
+            if (!visual.lens) {
+                visual.lensUnavailable = true;
+                return;
+            }
+        }
+
+        const position = pose ?? visual.group.position;
+        const vx = last?.vx ?? 0;
+        const vz = last?.vz ?? 0;
+
+        visual.lens.update(
+            position.x,
+            position.z,
+            vx,
+            vz,
+            Math.hypot(vx, vz) / 30,
+            visual.lensLevel,
+            now() / 1000,
+            Math.max(0.2, visual.lensLevel)
+        );
+    }
+
     disposeVisual(remote) {
         const visual = remote.visual;
         if (!visual) return;
+
+        visual.lens?.dispose();
+        visual.lens = null;
 
         this.scene.remove(visual.group);
 
