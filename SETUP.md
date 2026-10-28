@@ -69,6 +69,14 @@ can award themselves points.
   and hits exactly what is drawn, including anything that moves into it while
   it's visible.
 
+### One pilot per browser
+
+Each browser is one pilot. Reloading the page, or opening the game in another
+tab, reconnects the same pilot with the same score instead of adding a new
+one. If two tabs are open, the one you're looking at is online, and the other
+plays solo and shows ONLINE IN ANOTHER TAB. Switching back to it takes over
+again.
+
 ### Callsigns
 
 Each player can set the name others see: tap the callsign under the logo, type
@@ -182,10 +190,14 @@ where `src/index.js` calls `env.ASSETS.fetch(request)`.
 npx wrangler dev
 ```
 
-Open http://localhost:8787 in **two** browser windows side by side. To try the
-touch controls, use your browser's device emulation, or open
-`http://<your computer's IP>:8787` on your phone after starting with
-`npx wrangler dev --ip 0.0.0.0`.
+Open http://localhost:8787 as two different players, side by side. Each
+browser counts as one pilot, so two tabs or windows of the same browser are the
+same player (the newer one takes over, and the other shows ONLINE IN ANOTHER
+TAB). For a second player, use one of these:
+- a private/incognito window
+- a different browser
+- your phone at `http://<your computer's IP>:8787`, after starting with
+  `npx wrangler dev --ip 0.0.0.0`
 
 Check each of these:
 - **Joining:** both windows show **ONLINE · 2 PILOTS**, a ROUND number and a

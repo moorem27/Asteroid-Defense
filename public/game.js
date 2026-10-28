@@ -6840,7 +6840,9 @@ function onNetOffline() {
     updateRoundHUD();
     updateHUD();
 
-    $("message").textContent = "CONNECTION LOST — OFFLINE MODE";
+    $("message").textContent = multiplayer?.replaced
+        ? "ONLINE IN ANOTHER TAB — SOLO HERE"
+        : "CONNECTION LOST — OFFLINE MODE";
 }
 
 // ------------------------------------------------------------

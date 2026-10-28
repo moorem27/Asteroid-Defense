@@ -102,7 +102,10 @@ async function rawClient(server, name, { token, lobby } = {}) {
         }
     };
 
-    ws.onclose = () => { c.closed = true; };
+    ws.onclose = (event) => {
+        c.closed = true;
+        c.closeCode = event?.code;
+    };
 
     await waitFor(() => c.welcome, 2000, `${name} welcomed`);
 
@@ -147,7 +150,7 @@ async function hold(clients, ms) {
 
 const clients = [];
 
-function makeClient(server, name = "TESTER", extra = {}) {
+function makeClient(server, name = "TESTER", { token, ...extra } = {}) {
     const scene = makeScene();
     const calls = { online: [], offline: 0, events: [], world: [], you: [], round: [] };
 
@@ -175,6 +178,7 @@ function makeClient(server, name = "TESTER", extra = {}) {
     });
 
     mp.name = name;
+    if (token) mp.token = token;
     mp.scene = scene;
     mp.calls = calls;
     mp.leaderboard = leaderboard;
@@ -684,6 +688,124 @@ test("reconnecting in the same round returns to the same lobby with the same sco
     shutdownAll();
 });
 
+// ---- One pilot per browser ------------------------------------------------
+
+const TOKEN = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+test("same browser again: the old connection is replaced, not a second pilot; score kept", async () => {
+    const server = await loadWorker();
+
+    const a1 = await rawClient(server, "ALPHA", { token: TOKEN });
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    shipOf(lobby, a1).score = 3000;
+    shipOf(lobby, a1).kills = 2;
+
+    const a2 = await rawClient(server, "ALPHA", { token: TOKEN, lobby: a1.welcome.lobby });
+
+    await waitFor(() => a1.closed, 1000, "old connection closed");
+
+    assert.equal(a1.closeCode, 4001, "told it was replaced");
+    assert.equal(lobby.ships.size, 2, "two pilots, not three");
+    assert.equal(lobby.liveSockets().length, 2);
+    assert.equal(a2.welcome.you.sc, 3000, "score carried over");
+    assert.equal(a2.welcome.you.k, 2);
+    assert.equal(a2.welcome.players.length, 1, "sees only BRAVO");
+
+    await waitFor(() => b.snaps.length > 0 && b.snaps.at(-1).p.length === 2, 1000, "B's snapshots");
+
+    const ids = b.snaps.at(-1).p.map((p) => p[0]).sort();
+    assert.deepEqual(ids, [a2.id, b.id].sort(), "the old pilot is gone for others");
+
+    shutdownAll();
+});
+
+test("same browser again: works in a full lobby, and a lone player keeps the round", async () => {
+    const server = await loadWorker();
+
+    const me = await rawClient(server, "ME", { token: TOKEN });
+    const lobby = quietLobby(server);
+
+    shipOf(lobby, me).score = 777;
+    const round = lobby.round.n;
+    const rock = lobby.spawnAsteroid(5, 5, 1, 0, 0);
+
+    // Alone in the lobby: reconnecting doesn't reset the world.
+    const again = await rawClient(server, "ME", { token: TOKEN, lobby: me.welcome.lobby });
+
+    assert.equal(again.welcome.you.sc, 777);
+    assert.equal(lobby.round.n, round);
+    assert.ok(lobby.asteroids.includes(rock), "same world");
+
+    // Fill the lobby, then reconnect again: still accepted.
+    for (let i = 0; i < 19; i++) await rawClient(server, `P${i}`);
+
+    assert.equal(lobby.liveSockets().length, 20);
+
+    const third = await rawClient(server, "ME", { token: TOKEN, lobby: me.welcome.lobby });
+
+    assert.equal(third.welcome.lobby, me.welcome.lobby, "same lobby despite being full");
+    assert.equal(lobby.liveSockets().length, 20);
+
+    shutdownAll();
+});
+
+test("same browser back later: joins where the players are, not its old empty lobby", async () => {
+    const server = await loadWorker();
+
+    const me = await rawClient(server, "ME", { token: TOKEN });
+    const oldLobby = me.welcome.lobby;
+
+    me.ws.close();
+    await waitFor(() => server.lobbies()[0].state.sockets.length === 0, 1000, "left");
+    await waitFor(async () => (await server.matchmakerStats()).length === 0, 1000, "lobby forgotten");
+
+    const other = await rawClient(server, "OTHER");
+    assert.notEqual(other.welcome.lobby, oldLobby);
+
+    const back = await rawClient(server, "ME", { token: TOKEN, lobby: oldLobby });
+
+    assert.equal(back.welcome.lobby, other.welcome.lobby, "with the other player");
+    assert.equal(back.welcome.players.length, 1);
+
+    shutdownAll();
+});
+
+test("client: a replaced tab stops reconnecting, shows ONLINE IN ANOTHER TAB, and can take over again", async () => {
+    const server = await loadWorker();
+
+    const status1 = { textContent: "", dataset: {} };
+
+    const tab1 = makeClient(server, "ALPHA", { token: TOKEN, statusElement: status1 });
+    await waitFor(() => tab1.isOnline(), 2000, "tab 1 online");
+
+    const tab2 = makeClient(server, "ALPHA", { token: TOKEN });
+    await waitFor(() => tab2.isOnline(), 2000, "tab 2 online");
+
+    await waitFor(() => tab1.status === "elsewhere", 1000, "tab 1 replaced");
+
+    assert.equal(tab1.calls.offline, 1);
+    assert.equal(status1.textContent, "ONLINE IN ANOTHER TAB");
+
+    // It doesn't fight back on its own.
+    await sleep(600);
+    assert.equal(tab1.socket, null);
+    assert.equal(tab2.isOnline(), true);
+    assert.equal(server.lobbies()[0].instance.liveSockets().length, 1);
+
+    // Switching back to tab 1 takes the session back.
+    tab1.resumeIfReplaced();
+
+    await waitFor(() => tab1.isOnline(), 2000, "tab 1 back");
+    await waitFor(() => tab2.status === "elsewhere", 1000, "tab 2 replaced");
+
+    await sleep(300);
+    assert.equal(server.lobbies()[0].instance.liveSockets().length, 1, "never two");
+
+    shutdownAll();
+});
+
 // ---- Callsigns ----------------------------------------------------------
 
 test("callsigns: a blocked name on join becomes PILOT-####", async () => {
@@ -1135,6 +1257,9 @@ test("client: other pilots' ships interpolate, hide when destroyed, show warp", 
         const b = makeClient(server, "BRAVO");
 
         await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "roster");
+
+        // No spawn shield, so the ship isn't blinking when checked.
+        unshield(server.lobbies()[0].instance);
 
         const bLife = () => b.calls.online[0].you.lf;
 

@@ -25,6 +25,11 @@ import { checkName, nameProblem, randomCallsign } from "./name-filter.js";
 // Must match PROTOCOL_VERSION in src/index.js.
 const PROTOCOL_VERSION = 2;
 
+// The server closes a connection with this code when the same browser
+// connects again (a reload, or the game open in another tab). Must
+// match CLOSE_REPLACED in src/index.js.
+const CLOSE_REPLACED = 4001;
+
 const CONFIG = {
     // Seconds between ship updates while flying (the server needs
     // them for collisions), and while on a menu or game-over screen.
@@ -149,11 +154,20 @@ export class Multiplayer {
         this.setStatus(this.enabled ? "connecting" : "offline");
         this.renderLeaderboard();
 
+        // True after another tab in this browser took over the online
+        // session; this tab then plays solo until it's shown again.
+        this.replaced = false;
+
         if (this.enabled && typeof window !== "undefined") {
             window.addEventListener("online", () => this.connectSoon(0));
 
             document.addEventListener("visibilitychange", () => {
-                this.guard(() => this.sendState());
+                this.guard(() => {
+                    this.sendState();
+
+                    // Switching back to this tab takes the session back.
+                    if (!document.hidden) this.resumeIfReplaced();
+                });
             });
         }
     }
@@ -248,7 +262,7 @@ export class Multiplayer {
     // ---------------------------------------------------------
 
     openSocket() {
-        if (!this.enabled || this.socket) return;
+        if (!this.enabled || this.socket || this.replaced) return;
 
         clearTimeout(this.retryTimer);
         this.retryTimer = null;
@@ -279,7 +293,7 @@ export class Multiplayer {
         this.welcomed = false;
 
         ws.onmessage = (event) => this.guard(() => this.handleMessage(ws, event.data));
-        ws.onclose = () => this.guard(() => this.handleClose(ws));
+        ws.onclose = (event) => this.guard(() => this.handleClose(ws, event?.code));
         ws.onerror = () => {};
 
         this.joinTimer = setTimeout(() => {
@@ -304,7 +318,7 @@ export class Multiplayer {
         this.handleClose(ws);
     }
 
-    handleClose(ws) {
+    handleClose(ws, code) {
         if (ws !== this.socket) return;
 
         const wasWelcomed = this.welcomed;
@@ -325,11 +339,29 @@ export class Multiplayer {
         this.setStatus("offline");
         this.renderLeaderboard();
 
+        // This browser connected again elsewhere (another tab, or a
+        // newer copy of this page): don't fight it for the session.
+        if (code === CLOSE_REPLACED) {
+            this.replaced = true;
+            clearTimeout(this.retryTimer);
+            this.setStatus("elsewhere");
+        }
+
         if (wasWelcomed) {
             this.call("offline");
         }
 
-        this.scheduleRetry(wasWelcomed);
+        if (!this.replaced) this.scheduleRetry(wasWelcomed);
+    }
+
+    // Take the online session back after another tab had it.
+    resumeIfReplaced() {
+        if (!this.replaced) return;
+
+        this.replaced = false;
+        this.failures = 0;
+        this.setStatus("connecting");
+        this.connectSoon(0);
     }
 
     scheduleRetry(afterDrop) {
@@ -354,7 +386,7 @@ export class Multiplayer {
     }
 
     connectSoon(delay) {
-        if (!this.enabled || this.socket) return;
+        if (!this.enabled || this.socket || this.replaced) return;
 
         clearTimeout(this.retryTimer);
         this.retryTimer = setTimeout(() => this.connect(), delay);
@@ -1255,6 +1287,9 @@ export class Multiplayer {
         } else if (this.status === "connecting") {
             text = "LINKING TO SERVER...";
             cls = "connecting";
+        } else if (this.status === "elsewhere") {
+            text = "ONLINE IN ANOTHER TAB";
+            cls = "offline";
         } else {
             text = "OFFLINE MODE";
             cls = "offline";
@@ -1532,17 +1567,19 @@ function savePilotName(name) {
     }
 }
 
-// A random id that lets the server give back your score if you
-// reconnect during a round. Per tab, so two tabs are two pilots.
+// A random id for this browser. The server uses it to recognize the
+// same player coming back (a reload, a dropped connection, or another
+// tab), so it's one pilot that keeps its score, not a new one each
+// time. Shared by every tab in this browser.
 function loadPilotToken() {
     const key = "asteroidDefensePilotToken";
 
     try {
-        const saved = sessionStorage.getItem(key);
-        if (saved) return saved;
+        const saved = localStorage.getItem(key);
+        if (saved && /^[0-9a-f-]{16,36}$/i.test(saved)) return saved;
 
         const token = randomToken();
-        sessionStorage.setItem(key, token);
+        localStorage.setItem(key, token);
 
         return token;
     } catch {
@@ -1558,9 +1595,11 @@ function randomToken() {
     }
 }
 
+// The lobby this browser was last in, so coming back (or opening
+// another tab) returns to it when it still has room.
 function loadLobbyId() {
     try {
-        return sessionStorage.getItem("asteroidDefenseLobby");
+        return localStorage.getItem("asteroidDefenseLobby");
     } catch {
         return null;
     }
@@ -1568,11 +1607,11 @@ function loadLobbyId() {
 
 function saveLobbyId(id) {
     try {
-        sessionStorage.setItem("asteroidDefenseLobby", id);
+        localStorage.setItem("asteroidDefenseLobby", id);
     } catch {
         // Ignore.
     }
 }
 
 // Exposed for tests.
-export const _internals = { samplePose, sampleRocket, CONFIG, PROTOCOL_VERSION };
+export const _internals = { samplePose, sampleRocket, CONFIG, PROTOCOL_VERSION, CLOSE_REPLACED };

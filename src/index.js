@@ -75,6 +75,11 @@ const MATCHMAKER_NAME = "global";
 // A player can change their callsign at most this often.
 const RENAME_COOLDOWN_MS = 3000;
 
+// Close code sent to a connection that the same browser has replaced
+// (a reload, or the game opened in another tab). The game doesn't
+// reconnect after it.
+const CLOSE_REPLACED = 4001;
+
 // ---- All-time leaderboard ---------------------------------------------
 
 // How many all-time scores are kept and shown.
@@ -302,6 +307,29 @@ async function handleJoin(request, env, url) {
         );
 
         const tried = [];
+
+        // A returning player whose old connection may still be open
+        // (a reload, another tab) goes straight to their old lobby: it
+        // replaces that connection even when the lobby is full, so it
+        // can't linger as a ghost. The lobby only accepts this if it
+        // really finds their old connection; otherwise (e.g. they're
+        // back the next day) normal matchmaking below takes over.
+        if (preferred && url.searchParams.get("token")) {
+            const headers = new Headers(request.headers);
+            headers.set("X-Lobby-Id", preferred);
+            headers.set("X-Replace-Only", "1");
+
+            const lobby = env.LOBBY.get(env.LOBBY.idFromName(preferred));
+            const response = await lobby.fetch(new Request(request.url, { headers }));
+
+            if (response.status === 101) {
+                return response;
+            }
+
+            // 409 (nothing to replace): normal matchmaking still prefers
+            // this lobby if it has room. 503 (full): try elsewhere.
+            if (response.status === 503) tried.push(preferred);
+        }
 
         for (let attempt = 0; attempt < 3; attempt++) {
             const lobbyId = await matchmaker.assign(
@@ -561,6 +589,12 @@ export class Lobby extends DurableObject {
         // ws -> ship (rebuilt from the socket attachment if missing)
         this.ships = new Map();
 
+        // Sockets replaced by a newer connection from the same browser.
+        // They can be listed for a moment while they close; they're
+        // ignored everywhere. (Also flagged in the socket's attachment,
+        // in case this object restarts meanwhile.)
+        this.replaced = new WeakSet();
+
         // Scores of players who dropped this round, by token, so a
         // reconnect keeps its score.
         this.departed = new Map();
@@ -590,13 +624,48 @@ export class Lobby extends DurableObject {
 
         const lobbyId = request.headers.get("X-Lobby-Id");
 
-        if (lobbyId && !this.lobbyId) {
+        // (A replace-only probe of an empty lobby shouldn't write
+        // anything: it's about to be refused.)
+        if (lobbyId && !this.lobbyId && !request.headers.get("X-Replace-Only")) {
             this.lobbyId = lobbyId;
             await this.ctx.storage.put("lobbyId", lobbyId);
         }
 
+        const url = new URL(request.url);
+        const token = sanitizeToken(url.searchParams.get("token"));
+
+        // The same browser connecting again (a reload, or another tab):
+        // its old connection is replaced, so it's one pilot, not two.
+        // Its score carries over (removePlayer keeps it for this round).
+        // Done with no await before the accept below, like the capacity
+        // check.
+        let replacedAny = false;
+
+        if (token) {
+            for (const old of this.liveSockets()) {
+                if (readAttachment(old)?.token !== token) continue;
+
+                this.removePlayer(old);
+                this.markReplaced(old);
+
+                try {
+                    old.close(CLOSE_REPLACED, "Replaced by a newer connection");
+                } catch {
+                    // Already closed.
+                }
+
+                replacedAny = true;
+            }
+        }
+
+        // Asked to join only if replacing an old connection, and there
+        // wasn't one: let the Worker use normal matchmaking.
+        if (request.headers.get("X-Replace-Only") && !replacedAny) {
+            return new Response("No connection to replace", { status: 409 });
+        }
+
         // Capacity check and accept with no await in between.
-        const sockets = this.ctx.getWebSockets();
+        const sockets = this.liveSockets();
 
         if (sockets.length >= MAX_PLAYERS) {
             return new Response("Lobby full", { status: 503 });
@@ -605,7 +674,8 @@ export class Lobby extends DurableObject {
         const now = Date.now();
 
         // First player into an empty lobby: a fresh world and round.
-        if (sockets.length === 0) {
+        // (Not when the only player just reconnected.)
+        if (sockets.length === 0 && !replacedAny) {
             this.resetWorld();
             this.departed.clear();
             this.round = null;
@@ -616,9 +686,7 @@ export class Lobby extends DurableObject {
             this.startRound(1, now, false);
         }
 
-        const url = new URL(request.url);
         const name = sanitizeName(url.searchParams.get("name"));
-        const token = sanitizeToken(url.searchParams.get("token"));
 
         const usedColors = new Set();
         const usedIds = new Set();
@@ -670,7 +738,7 @@ export class Lobby extends DurableObject {
 
         const players = [];
 
-        for (const ws of this.ctx.getWebSockets()) {
+        for (const ws of this.liveSockets()) {
             const info = readAttachment(ws);
             if (info && ws !== server) {
                 players.push({ id: info.id, name: info.name, color: info.color });
@@ -741,7 +809,36 @@ export class Lobby extends DurableObject {
         }
     }
 
+    isReplaced(ws) {
+        return this.replaced.has(ws) || Boolean(readAttachment(ws)?.replaced);
+    }
+
+    markReplaced(ws) {
+        this.replaced.add(ws);
+
+        const info = readAttachment(ws);
+
+        if (info) {
+            try {
+                ws.serializeAttachment({ ...info, replaced: true });
+            } catch {
+                // Closed already; the WeakSet covers it.
+            }
+        }
+    }
+
+    // Connected players' sockets (not ones being replaced).
+    liveSockets() {
+        return this.ctx.getWebSockets().filter((ws) => !this.isReplaced(ws));
+    }
+
     removePlayer(ws) {
+        // Already removed when it was replaced.
+        if (this.isReplaced(ws)) {
+            this.ships.delete(ws);
+            return;
+        }
+
         const ship = this.ships.get(ws) ?? null;
         const info = readAttachment(ws);
 
@@ -778,7 +875,7 @@ export class Lobby extends DurableObject {
             this.broadcast({ t: "leave", id: info.id }, ws);
         }
 
-        const remaining = this.ctx.getWebSockets().filter((s) => s !== ws);
+        const remaining = this.liveSockets().filter((s) => s !== ws);
 
         if (remaining.length === 0) {
             this.stopTimer();
@@ -808,7 +905,7 @@ export class Lobby extends DurableObject {
 
         if (!ship) {
             const info = readAttachment(ws);
-            if (!info) return null;
+            if (!info || info.replaced || this.replaced.has(ws)) return null;
 
             const now = Date.now();
 
@@ -2217,7 +2314,7 @@ export class Lobby extends DurableObject {
 
     broadcastRaw(payload, except = null) {
         for (const ws of this.ctx.getWebSockets()) {
-            if (ws !== except) safeSendRaw(ws, payload);
+            if (ws !== except && !this.replaced.has(ws)) safeSendRaw(ws, payload);
         }
     }
 
@@ -2228,8 +2325,7 @@ export class Lobby extends DurableObject {
 
         if (!this.lobbyId) return;
 
-        const count = this.ctx
-            .getWebSockets()
+        const count = this.liveSockets()
             .filter((ws) => ws.readyState === WebSocket.OPEN)
             .length;
 
@@ -2391,4 +2487,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE };
+export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED };
