@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <!-- Bubble: dark space inside, brightening to cyan at the rim. -->
+    <radialGradient id="bubble" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#071230"/>
+      <stop offset="0.62" stop-color="#0a1d4a"/>
+      <stop offset="0.86" stop-color="#1b6fae"/>
+      <stop offset="1" stop-color="#42f5f2"/>
+    </radialGradient>
+    <linearGradient id="hull" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#9fe9ff"/>
+    </linearGradient>
+    <radialGradient id="engine" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffd1ec"/>
+      <stop offset="0.45" stop-color="#ff3f9f"/>
+      <stop offset="1" stop-color="#ff3f9f" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Warp bubble -->
+  <circle cx="32" cy="32" r="27" fill="url(#bubble)"/>
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#42f5f2" stroke-width="3.5" filter="url(#glow)"/>
+
+  <!-- Light bending around the bubble: highlight arcs -->
+  <path d="M14.5 22 A21 21 0 0 1 30 11.2" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" opacity="0.85"/>
+  <path d="M49.5 42 A21 21 0 0 1 40 51.5" fill="none" stroke="#9ff8ff" stroke-width="1.8" stroke-linecap="round" opacity="0.6"/>
+
+  <!-- Engine glow -->
+  <circle cx="32" cy="45.5" r="6.5" fill="url(#engine)"/>
+
+  <!-- Ship (top-down dart, nose up) -->
+  <path d="M32 13.5 L44.5 45 L32 39.5 L19.5 45 Z" fill="url(#hull)" stroke="#0a1d4a" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M32 21 L35.2 34 L32 32.4 L28.8 34 Z" fill="#42f5f2"/>
+</svg>
