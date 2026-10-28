@@ -99,7 +99,13 @@
     <footer id="bottom-hud">
         <div class="hud-block">
             <div class="hud-label">HULL INTEGRITY</div>
-            <div class="lives-value" id="lives">♥ ♥ ♥</div>
+            <!-- Hull bar: green when full, through yellow to red, empty
+                 when destroyed. game.js (updateHUD) sets its level. -->
+            <div class="lives-value hull-bar" id="lives" data-hull="3"
+                 role="meter" aria-label="Hull integrity"
+                 aria-valuemin="0" aria-valuemax="3" aria-valuenow="3">
+                <div class="hull-fill" id="hull-fill"></div>
+            </div>
 
             <!-- Weapon switch: appears once a second weapon unlocks.
                  Tap (or click) for the next weapon. -->

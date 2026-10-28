@@ -1228,11 +1228,39 @@ function updateHUD() {
     $("high-score").textContent = String(state.highScore).padStart(6, "0");
     $("sector").textContent = String(state.sector).padStart(2, "0");
 
-    $("lives").textContent =
-        "♥ ".repeat(Math.max(0, state.lives)).trim() || "—";
+    updateHullBar();
+}
 
-    $("lives").style.color =
-        state.lives <= 1 ? "#ff3f9f" : "#ff6dce";
+// ------------------------------------------------------------
+// HULL BAR
+// A glowing bar instead of hearts. Full hull is green; each hit moves
+// it along the gradient through yellow to red; destroyed is empty.
+// The color and width animate (see .hull-bar in style.css).
+// ------------------------------------------------------------
+
+const HULL_MAX = 3;
+
+// Bar color for each hull level (index = hull points left).
+const HULL_COLORS = ["#3a3f5c", "#ff3b4e", "#ffd23f", "#3dff8b"];
+
+let shownHull = null;
+
+function updateHullBar() {
+    const bar = $("lives");
+    const fill = $("hull-fill");
+
+    if (!bar || !fill) return;
+
+    const hull = clamp(Math.round(state.lives), 0, HULL_MAX);
+
+    // Only touch the page when the level changes.
+    if (hull === shownHull) return;
+    shownHull = hull;
+
+    fill.style.width = `${(hull / HULL_MAX) * 100}%`;
+    bar.style.color = HULL_COLORS[hull];
+    bar.dataset.hull = String(hull);
+    bar.setAttribute?.("aria-valuenow", String(hull));
 }
 
 // The match clock in the HUD: time left, e.g. "2:13". Only touches
