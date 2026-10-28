@@ -17,6 +17,7 @@ class FakeElement {
         this.children = [];
         this.listeners = {};
         this.offsetWidth = 0;
+        this.value = "";
 
         const set = new Set(classes);
 
@@ -42,6 +43,9 @@ class FakeElement {
     }
 
     appendChild(child) { this.children.push(child); return child; }
+    focus() { this.focused = true; }
+    blur() { this.focused = false; }
+    select() {}
     querySelector() { return new FakeElement(); }
     closest() { return null; }
     getContext() { return null; }
@@ -117,9 +121,9 @@ export function installDom(indexHtmlPath) {
             for (const cb of callbacks) cb(performance.now());
         },
 
-        key(type, code) {
+        key(type, code, target = null) {
             for (const fn of windowListeners[type] ?? []) {
-                fn({ type, code, repeat: false, preventDefault() {} });
+                fn({ type, code, target, repeat: false, preventDefault() {} });
             }
         }
     };

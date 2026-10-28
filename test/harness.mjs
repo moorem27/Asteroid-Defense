@@ -36,8 +36,20 @@ export class WorkerResponse {
         });
     }
 
+    get ok() {
+        return this.status >= 200 && this.status < 300;
+    }
+
     async text() {
         return this.body == null ? "" : String(this.body);
+    }
+
+    async json() {
+        return JSON.parse(await this.text());
+    }
+
+    clone() {
+        return new WorkerResponse(this.body, { status: this.status, headers: this.headers });
     }
 }
 
@@ -281,11 +293,14 @@ export async function loadWorker(env = {}) {
         throw new Error("Could not patch the cloudflare:workers import.");
     }
 
+    const filterUrl = pathToFileURL(path.join(here, "../public/name-filter.js")).href;
+    const withFilter = patched.replace('"../public/name-filter.js"', JSON.stringify(filterUrl));
+
     const outDir = path.join(here, ".build");
     await mkdir(outDir, { recursive: true });
 
     const outFile = path.join(outDir, `worker-${Date.now()}-${Math.random()}.mjs`);
-    await writeFile(outFile, patched);
+    await writeFile(outFile, withFilter);
 
     const mod = await import(pathToFileURL(outFile).href);
 

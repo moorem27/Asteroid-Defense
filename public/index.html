@@ -72,11 +72,23 @@
             <div id="net-status" data-state="connecting" role="status">
                 LINKING TO SERVER...
             </div>
+
+            <!-- Your callsign; tap to change it (multiplayer.js). -->
+            <button id="callsign" class="callsign" type="button" hidden
+                    aria-label="Change your callsign">
+                <span id="callsign-name">PILOT</span>
+                <span class="callsign-edit" aria-hidden="true">✎</span>
+            </button>
         </div>
 
         <div class="hud-block hud-right">
             <div class="hud-label">HIGH SCORE</div>
             <div class="hud-value" id="high-score">000000</div>
+
+            <!-- The all-time best across every lobby; game.js fills it. -->
+            <div id="all-time-best" class="all-time-best" hidden>
+                ALL-TIME <span id="all-time-score">0</span>
+            </div>
 
             <!-- Lobby top 5 (online only); multiplayer.js fills it. -->
             <ol id="leaderboard" class="leaderboard" hidden></ol>
@@ -165,6 +177,12 @@
             INSERT COIN
         </button>
 
+        <!-- All-time top 10 (from the server); game.js fills it. -->
+        <div class="records" id="records-start-box" hidden>
+            <div class="records-title">ALL-TIME TOP 10</div>
+            <ol id="records-start" class="records-list"></ol>
+        </div>
+
         <div class="controls">
             <div class="controls-heading">MISSION CONTROLS</div>
 
@@ -228,6 +246,12 @@
             PLAY AGAIN
         </button>
 
+        <!-- All-time top 10 (from the server); game.js fills it. -->
+        <div class="records" id="records-gameover-box" hidden>
+            <div class="records-title">ALL-TIME TOP 10</div>
+            <ol id="records-gameover" class="records-list"></ol>
+        </div>
+
         <div class="panel-bottomline">
             PILOT, YOUR GALAXY NEEDS YOU
         </div>
@@ -238,9 +262,39 @@
         <div class="results-title">ROUND OVER</div>
         <div id="results-winner" class="results-winner"></div>
         <ol id="results-list" class="results-list"></ol>
+
+        <!-- A new all-time record set this round. -->
+        <div id="results-record" class="results-record" hidden></div>
+
+        <!-- All-time top 5 (from the server); game.js fills it. -->
+        <div class="records" id="records-results-box" hidden>
+            <div class="records-title">ALL-TIME TOP 5</div>
+            <ol id="records-results" class="records-list"></ol>
+        </div>
         <div class="results-next">
             NEXT ROUND IN <span id="results-countdown">0:20</span>
         </div>
+    </section>
+
+    <!-- Change callsign (multiplayer.js). -->
+    <section id="callsign-dialog" class="callsign-dialog hidden"
+             role="dialog" aria-modal="true" aria-labelledby="callsign-title">
+        <form id="callsign-form" class="callsign-box" autocomplete="off">
+            <label id="callsign-title" class="callsign-title" for="callsign-input">
+                YOUR CALLSIGN
+            </label>
+
+            <input id="callsign-input" class="callsign-input" type="text"
+                   maxlength="14" spellcheck="false" autocapitalize="characters"
+                   autocorrect="off" enterkeyhint="done">
+
+            <div id="callsign-error" class="callsign-error" aria-live="polite"></div>
+
+            <div class="callsign-buttons">
+                <button id="callsign-cancel" type="button" class="callsign-button">CANCEL</button>
+                <button id="callsign-save" type="submit" class="callsign-button primary">SAVE</button>
+            </div>
+        </form>
     </section>
 
     <!-- The import map must appear before this module script. -->

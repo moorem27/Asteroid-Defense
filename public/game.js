@@ -15,7 +15,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 // Missing elements (null) are not cached, so they can appear later.
 // Shown in the browser console at startup, so it is easy to confirm
 // which version of game.js the browser is actually running.
-const GAME_BUILD = "multiplayer-2";
+const GAME_BUILD = "multiplayer-2-callsigns";
 window.ASTEROID_DEFENSE_BUILD = GAME_BUILD;
 
 const domCache = Object.create(null);
@@ -925,7 +925,20 @@ function refreshAim() {
     }
 }
 
+// True while typing in a text box (the callsign box): game keys are
+// left alone so typing W, S, Space or Enter doesn't fly or fire.
+function isTyping(event) {
+    let target = event?.target;
+
+    // Selection events can target the text inside an element.
+    if (target && !target.closest) target = target.parentElement;
+
+    return Boolean(target?.closest?.("input, textarea, [contenteditable]"));
+}
+
 window.addEventListener("keydown", (event) => {
+    if (isTyping(event)) return;
+
     keys[event.code] = true;
     if (
         event.code === "KeyA" ||
@@ -973,6 +986,8 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("keyup", (event) => {
     keys[event.code] = false;
+
+    if (isTyping(event)) return;
 
     if (event.code === "Space") {
         firing = false;
@@ -1085,7 +1100,12 @@ $("weapon-switch")?.addEventListener("click", (event) => {
 // text selection, a context menu, copy / paste or zooming.
 // ------------------------------------------------------------
 
-const blockDefault = (event) => event.preventDefault();
+const blockDefault = (event) => {
+    // The callsign box needs normal typing, selecting and pasting.
+    if (isTyping(event)) return;
+
+    event.preventDefault();
+};
 
 // Long-press menu (and right-click menu on desktop).
 document.addEventListener("contextmenu", blockDefault);
@@ -1115,7 +1135,7 @@ document.addEventListener("touchend", (event) => {
 
     if (
         now - lastTouchEnd < 300 &&
-        !event.target.closest?.("button")
+        !event.target.closest?.("button, input")
     ) {
         event.preventDefault();
     }
@@ -6410,6 +6430,9 @@ function endGame() {
     state.running = false;
     state.gameOver = true;
 
+    // The latest all-time list for the game-over screen.
+    loadAllTimeRecords();
+
     saveHighScore();
 
     $("final-score").textContent =
@@ -7475,6 +7498,9 @@ function onNetRound(round) {
             showRoundResults();
         }
     } else if (round.phase === "playing") {
+        records.banner = null;
+        renderRecordBanner();
+
         // A new round: everything resets. The server sends the new
         // spawn point and world right after this.
         startGame();
@@ -7533,6 +7559,10 @@ function escapeHtml(text) {
 function showRoundResults() {
     const panel = $("round-results");
     if (!panel) return;
+
+    // A record set this round (see onNetRecords).
+    renderRecordBanner();
+    renderAllTimeRecords();
 
     const round = net.round;
     const results = Array.isArray(round?.results) ? round.results : [];
@@ -7636,6 +7666,187 @@ function updateOnlineGame(dt) {
 }
 
 // ------------------------------------------------------------
+// ALL-TIME LEADERBOARD
+// The server keeps the 10 best scores ever set in any lobby (see
+// "ALL-TIME LEADERBOARD" in src/index.js). Only online scores count:
+// the server calculates those itself, so they can't be faked.
+//
+// Shown as "ALL-TIME" under the high score, and as a top 10 on the
+// start and game-over screens (top 5 on the round results). If the
+// server can't be reached, these simply stay hidden.
+// ------------------------------------------------------------
+
+const records = {
+    top: [],
+
+    // Scores this browser set that made the list (matched by time and
+    // score), so they can be shown as "YOU". Remembered between visits.
+    mine: loadMyRecordIds(),
+
+    loading: false,
+
+    // "New record" line for this round's results screen (or null).
+    banner: null
+};
+
+function recordId(r) {
+    return `${r.at}:${r.score}`;
+}
+
+function loadMyRecordIds() {
+    try {
+        const saved = JSON.parse(localStorage.getItem("asteroidDefenseMyRecords") || "[]");
+        return new Set(Array.isArray(saved) ? saved.slice(-50) : []);
+    } catch {
+        return new Set();
+    }
+}
+
+function saveMyRecordIds() {
+    try {
+        localStorage.setItem(
+            "asteroidDefenseMyRecords",
+            JSON.stringify([...records.mine].slice(-50))
+        );
+    } catch {
+        // Storage unavailable (private mode): only this visit shows YOU.
+    }
+}
+
+// Fetch the list from the server (cached at the edge for 30 s).
+async function loadAllTimeRecords() {
+    if (records.loading) return;
+    if (typeof location === "undefined" || !/^https?:$/.test(location.protocol)) return;
+
+    records.loading = true;
+
+    try {
+        const controller = typeof AbortController !== "undefined"
+            ? new AbortController()
+            : null;
+
+        const timeout = setTimeout(() => controller?.abort(), 6000);
+
+        const response = await fetch("/api/leaderboard", {
+            signal: controller?.signal
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (Array.isArray(data?.top)) setAllTimeRecords(data.top);
+    } catch {
+        // Offline, or not served by the Worker: nothing to show.
+    } finally {
+        records.loading = false;
+    }
+}
+
+// A new list. Entries with `id` set are this lobby's players (sent by
+// the lobby at the end of a round).
+function setAllTimeRecords(top) {
+    if (!Array.isArray(top)) return;
+
+    const selfId = multiplayer?.selfId;
+
+    let added = false;
+
+    for (const r of top) {
+        if (r && r.id && selfId && String(r.id) === selfId && !records.mine.has(recordId(r))) {
+            records.mine.add(recordId(r));
+            added = true;
+        }
+    }
+
+    if (added) saveMyRecordIds();
+
+    records.top = top
+        .filter((r) => r && Number.isFinite(Number(r.score)))
+        .slice(0, 10);
+
+    renderAllTimeRecords();
+}
+
+function onNetRecords(top) {
+    const previousBest = records.top[0]?.score ?? 0;
+
+    setAllTimeRecords(top);
+
+    // Did someone in this lobby just set a new all-time best? This
+    // usually arrives during the black hole, before the results screen
+    // opens, so it's kept for showRoundResults() too.
+    const best = records.top[0];
+
+    if (best && best.id && best.score > previousBest) {
+        records.banner = records.mine.has(recordId(best))
+            ? "NEW ALL-TIME RECORD!"
+            : `NEW ALL-TIME RECORD BY ${String(best.name)}`;
+    } else {
+        const mineOnList = records.top.findIndex(
+            (r) => r.id && records.mine.has(recordId(r))
+        );
+
+        records.banner = mineOnList >= 0
+            ? `YOU MADE THE ALL-TIME TOP 10 (#${mineOnList + 1})`
+            : null;
+    }
+
+    renderRecordBanner();
+}
+
+function renderRecordBanner() {
+    const banner = $("results-record");
+    if (!banner) return;
+
+    banner.textContent = records.banner ?? "";
+    banner.hidden = !records.banner;
+}
+
+function renderRecordsList(listId, count) {
+    const list = $(listId);
+    const box = $(`${listId}-box`);
+
+    if (!list || !box) return;
+
+    const rows = records.top.slice(0, count).map((r, i) => {
+        const me = records.mine.has(recordId(r));
+
+        return (
+            `<li class="${me ? "rec-you" : ""}">` +
+            `<span class="rec-rank">${i + 1}</span>` +
+            `<span class="rec-name" style="color:${escapeHtml(r.color ?? "#ffffff")}">${escapeHtml(me ? `${r.name} (YOU)` : r.name)}</span>` +
+            `<span class="rec-score">${Number(r.score).toLocaleString("en-US")}</span>` +
+            `</li>`
+        );
+    });
+
+    list.innerHTML = rows.join("");
+    box.hidden = rows.length === 0;
+}
+
+function renderAllTimeRecords() {
+    const best = records.top[0];
+    const line = $("all-time-best");
+    const score = $("all-time-score");
+
+    if (line && score) {
+        line.hidden = !best;
+
+        if (best) {
+            const text = Number(best.score).toLocaleString("en-US");
+            if (score.textContent !== text) score.textContent = text;
+        }
+    }
+
+    renderRecordsList("records-start", 10);
+    renderRecordsList("records-gameover", 10);
+    renderRecordsList("records-results", 5);
+}
+
+// ------------------------------------------------------------
 // STARTING MULTIPLAYER
 // ------------------------------------------------------------
 
@@ -7656,13 +7867,39 @@ function startMultiplayer() {
                 statusElement: $("net-status"),
                 leaderboardElement: $("leaderboard"),
 
+                callsign: {
+                    button: $("callsign"),
+                    label: $("callsign-name"),
+                    dialog: $("callsign-dialog"),
+                    form: $("callsign-form"),
+                    input: $("callsign-input"),
+                    error: $("callsign-error"),
+                    cancel: $("callsign-cancel")
+                },
+
                 handlers: {
+                    // Status line messages (callsign changes).
+                    message: (text) => {
+                        if (!blackHole.active) $("message").textContent = text;
+                    },
+
+                    // The callsign box opened or closed: stop flying and
+                    // firing while typing.
+                    dialog: () => {
+                        firing = false;
+                        pointerDown = false;
+                        pointerSteering = false;
+
+                        for (const key of Object.keys(keys)) keys[key] = false;
+                    },
+
                     online: onNetOnline,
                     offline: onNetOffline,
                     you: onNetYou,
                     world: onNetWorld,
                     events: onNetEvents,
-                    round: onNetRound
+                    round: onNetRound,
+                    records: onNetRecords
                 }
             });
 
@@ -7744,6 +7981,9 @@ async function boot() {
 
 // Join a lobby right away, while the models load.
 startMultiplayer();
+
+// The all-time leaderboard, for the HUD and start screen.
+loadAllTimeRecords();
 
 boot();
 render();

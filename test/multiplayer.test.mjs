@@ -684,6 +684,215 @@ test("reconnecting in the same round returns to the same lobby with the same sco
     shutdownAll();
 });
 
+// ---- Callsigns ----------------------------------------------------------
+
+test("callsigns: a blocked name on join becomes PILOT-####", async () => {
+    const server = await loadWorker();
+
+    const a = await rawClient(server, "FUCK FACE");
+    const b = await rawClient(server, "ADMIN");
+    const c = await rawClient(server, "maverick");
+
+    assert.match(a.welcome.name, /^PILOT-\d{4}$/);
+    assert.match(b.welcome.name, /^PILOT-\d{4}$/);
+    assert.equal(c.welcome.name, "MAVERICK");
+
+    shutdownAll();
+});
+
+test("callsigns: renames apply live for everyone; bad ones are refused; rate-limited", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    const names = [];
+
+    const listen = (client) => {
+        const orig = client.ws.onmessage;
+        client.ws.onmessage = ({ data }) => {
+            const m = JSON.parse(data);
+            if (m.t === "name") names.push({ to: client.welcome.name, ...m });
+            orig({ data });
+        };
+    };
+
+    listen(a);
+    listen(b);
+
+    a.send({ t: "n", name: "Goose" });
+    await waitFor(() => names.filter((n) => n.name === "GOOSE").length === 2, 1000, "both told");
+
+    assert.equal(shipOf(lobby, a).name, "GOOSE");
+
+    // A reconnect keeps it (stored on the socket).
+    const ws = lobby.ctx.getWebSockets().find((s) => s.deserializeAttachment().id === a.id);
+    assert.equal(ws.deserializeAttachment().name, "GOOSE");
+
+    // Too soon.
+    a.send({ t: "n", name: "ICEMAN" });
+    await waitFor(() => names.some((n) => n.rejected === "wait"), 1000, "rate limited");
+    assert.equal(shipOf(lobby, a).name, "GOOSE");
+
+    // A blocked name, after the cooldown: only A hears about it.
+    shipOf(lobby, a).lastRename = 0;
+    names.length = 0;
+
+    a.send({ t: "n", name: "SH1THEAD" });
+    await waitFor(() => names.some((n) => n.rejected === "blocked"), 1000, "refused");
+
+    assert.equal(shipOf(lobby, a).name, "GOOSE");
+    assert.ok(names.every((n) => n.to === "ALPHA"), "nobody else saw it");
+
+    shutdownAll();
+});
+
+test("callsigns (client): setName checks, saves, sends; other pilots update their roster and tag", async () => {
+    const server = await loadWorker();
+
+    const a = makeClient(server, "ALPHA");
+    const b = makeClient(server, "BRAVO");
+
+    await waitFor(() => a.remotes.size === 1 && b.remotes.size === 1, 2000, "rosters");
+
+    const bad = a.setName("f u c k");
+    assert.equal(bad.ok, false);
+    assert.equal(a.name, "ALPHA");
+
+    const good = a.setName("viper");
+    assert.equal(good.ok, true);
+    assert.equal(a.name, "VIPER");
+
+    await waitFor(() => b.nameOf(a.selfId) === "VIPER", 1000, "B sees the new name");
+
+    shutdownAll();
+});
+
+// ---- All-time leaderboard -----------------------------------------------
+
+function matchmakerOf(server) {
+    return server.env.MATCHMAKER.get(server.env.MATCHMAKER.idFromName("global"));
+}
+
+test("all-time: keeps the top 10, best first, one entry per player per round", async () => {
+    const server = await loadWorker();
+    const mm = matchmakerOf(server);
+
+    const entries = [];
+
+    for (let i = 1; i <= 14; i++) {
+        entries.push({ key: `k${i}`, name: `P${i}`, color: "#fff", score: i * 1000, kills: i });
+    }
+
+    entries.push({ key: "zero", name: "ZERO", color: "#fff", score: 0, kills: 0 });
+
+    let result = await mm.recordScores(entries);
+
+    assert.equal(result.top.length, 10);
+    assert.equal(result.top[0].score, 14000);
+    assert.equal(result.top[9].score, 5000);
+    assert.equal(result.minimum, 5000);
+    assert.ok(!result.top.some((r) => r.name === "ZERO"), "zero scores ignored");
+
+    // The same player's same round, higher: replaced, not duplicated.
+    result = await mm.recordScores([{ key: "k6", name: "P6", color: "#fff", score: 20000, kills: 9 }]);
+
+    assert.equal(result.top[0].name, "P6");
+    assert.equal(result.top.filter((r) => r.name === "P6").length, 1);
+
+    // ...lower: ignored.
+    result = await mm.recordScores([{ key: "k6", name: "P6", color: "#fff", score: 1, kills: 0 }]);
+    assert.equal(result.top[0].score, 20000);
+
+    // A score below the cut doesn't get in.
+    result = await mm.recordScores([{ key: "low", name: "LOW", color: "#fff", score: 100 }]);
+    assert.ok(!result.top.some((r) => r.name === "LOW"));
+
+    // The public list has no keys, and it survives a restart.
+    server.env.MATCHMAKER.restart("global");
+
+    const top = await matchmakerOf(server).topScores();
+    assert.equal(top.length, 10);
+    assert.equal(top[0].score, 20000);
+    assert.ok(top.every((r) => !("key" in r)), "keys stay private");
+});
+
+test("all-time: round end reports everyone and sends the list to the lobby", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    shipOf(lobby, a).score = 12345;
+    shipOf(lobby, b).score = 678;
+
+    lobby.round.endsAt = Date.now();
+
+    let records = null;
+
+    a.ws.onmessage = ((orig) => ({ data }) => {
+        const m = JSON.parse(data);
+        if (m.t === "records") records = m.top;
+        orig({ data });
+    })(a.ws.onmessage);
+
+    await waitFor(() => records, 2000, "records message");
+
+    assert.equal(records[0].name, "ALPHA");
+    assert.equal(records[0].score, 12345);
+    assert.equal(records[0].id, a.id, "this lobby's player marked");
+    assert.equal(records[1].id, b.id);
+
+    const response = await server.fetch("http://game.test/api/leaderboard");
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.top[0].score, 12345);
+    assert.ok(body.top.every((r) => !("key" in r) && !("id" in r)));
+
+    shutdownAll();
+});
+
+test("all-time: a player who leaves mid-round still makes the list, once", async () => {
+    const token = "fedcba9876543210fedcba9876543210";
+
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA", { token });
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    shipOf(lobby, a).score = 5000;
+
+    a.ws.close();
+    await waitFor(async () => (await matchmakerOf(server).topScores()).length === 1, 1000, "recorded on leave");
+
+    // Rejoins the same round, scores more, round ends.
+    const again = await rawClient(server, "ALPHA", { token, lobby: a.welcome.lobby });
+    shipOf(lobby, again).score = 9000;
+
+    lobby.round.endsAt = Date.now();
+    await waitFor(async () => (await matchmakerOf(server).topScores())[0]?.score === 9000, 2000, "updated");
+
+    const top = await matchmakerOf(server).topScores();
+    assert.equal(top.filter((r) => r.name === "ALPHA").length, 1, "one entry for that round");
+
+    assert.ok(b);
+    shutdownAll();
+});
+
+test("all-time: the leaderboard endpoint fails softly", async () => {
+    const server = await loadWorker();
+
+    server.env.MATCHMAKER.get = () => {
+        throw new Error("down");
+    };
+
+    const response = await server.fetch("http://game.test/api/leaderboard");
+
+    assert.equal(response.status, 503);
+    assert.deepEqual((await response.json()).top, []);
+});
+
 // ---- Lobbies and the matchmaker -----------------------------------------
 
 test("the 21st player gets a second lobby; 45 simultaneous joins never overfill", async () => {

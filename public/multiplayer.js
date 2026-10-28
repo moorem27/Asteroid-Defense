@@ -19,6 +19,9 @@
 //  - Add ?offline to the URL to switch multiplayer off entirely.
 // ============================================================
 
+// Callsign rules (shared with the server).
+import { checkName, nameProblem, randomCallsign } from "./name-filter.js";
+
 // Must match PROTOCOL_VERSION in src/index.js.
 const PROTOCOL_VERSION = 2;
 
@@ -77,7 +80,10 @@ export class Multiplayer {
      * @param {HTMLElement} [options.statusElement]
      * @param {HTMLElement} [options.leaderboardElement]
      * @param {object}  [options.handlers]  online(welcome), offline(),
-     *        world(msg), events(list, now), you(msg), round(round, now)
+     *        world(msg), events(list, now), you(msg), round(round, now),
+     *        records(top), message(text), dialog(open)
+     * @param {object}  [options.callsign]  The name button and box:
+     *        { button, label, dialog, form, input, error, cancel }
      * @param {string}  [options.serverUrl]
      * @param {Function} [options.WebSocketImpl] For tests.
      */
@@ -136,6 +142,9 @@ export class Multiplayer {
 
         this.lastErrorLog = 0;
         this.shared = null;
+
+        this.callsignUi = null;
+        this.setupCallsign(options.callsign);
 
         this.setStatus(this.enabled ? "connecting" : "offline");
         this.renderLeaderboard();
@@ -448,6 +457,15 @@ export class Multiplayer {
                 this.call("you", data);
                 break;
 
+            case "name":
+                this.onName(data);
+                break;
+
+            case "records":
+                // The all-time list, right after a round ends.
+                if (Array.isArray(data.top)) this.call("records", data.top);
+                break;
+
             case "round":
                 if (data.round?.phase === "playing") {
                     this.standings = [];
@@ -487,6 +505,16 @@ export class Multiplayer {
         this.failures = 0;
         this.selfId = String(data.id);
         this.selfName = String(data.name ?? this.name);
+
+        // The server turned our saved callsign down (its rules can be
+        // stricter than an older copy of this page's): use its choice.
+        if (data.name && data.name !== this.name) {
+            this.name = this.selfName;
+            savePilotName(this.name);
+            this.updateCallsignButton();
+
+            this.call("message", `CALLSIGN NOT ALLOWED — FLYING AS ${this.name}`);
+        }
         this.selfColor = data.color;
 
         if (typeof data.lobby === "string") {
@@ -1009,6 +1037,202 @@ export class Multiplayer {
     }
 
     // ---------------------------------------------------------
+    // CALLSIGN (the name other pilots see)
+    // A small button under the logo opens a box to type a new one.
+    // It's checked as you type (name-filter.js), saved in this
+    // browser, and sent to the lobby straight away; the server checks
+    // it again and has the final say.
+    // ---------------------------------------------------------
+
+    setupCallsign(ui) {
+        if (!ui?.button || !ui.dialog || !ui.form || !ui.input) return;
+
+        this.callsignUi = ui;
+
+        ui.button.addEventListener("click", (event) => {
+            event.preventDefault?.();
+            this.guard(() => this.openNameDialog());
+        });
+
+        ui.cancel?.addEventListener("click", (event) => {
+            event.preventDefault?.();
+            this.guard(() => this.closeNameDialog());
+        });
+
+        ui.form.addEventListener("submit", (event) => {
+            event.preventDefault?.();
+            this.guard(() => this.submitNameDialog());
+        });
+
+        ui.input.addEventListener("input", () => {
+            this.guard(() => {
+                const result = checkName(ui.input.value);
+                this.showNameError(
+                    ui.input.value.trim() === "" || result.ok ? "" : nameProblem(result.reason)
+                );
+            });
+        });
+
+        ui.input.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault?.();
+                this.guard(() => this.closeNameDialog());
+            }
+        });
+
+        this.updateCallsignButton();
+    }
+
+    updateCallsignButton() {
+        const button = this.callsignUi?.button;
+        if (!button) return;
+
+        // Only useful when multiplayer is on.
+        button.hidden = !this.enabled;
+
+        const label = this.callsignUi.label ?? button;
+        const text = this.name;
+
+        if (label.textContent !== text) label.textContent = text;
+    }
+
+    openNameDialog() {
+        const ui = this.callsignUi;
+        if (!ui) return;
+
+        ui.input.value = this.name;
+        this.showNameError("");
+
+        ui.dialog.classList.remove("hidden");
+
+        this.call("dialog", true);
+
+        try {
+            ui.input.focus();
+            ui.input.select?.();
+        } catch {
+            // Some phones won't focus without another tap; that's fine.
+        }
+    }
+
+    closeNameDialog() {
+        const ui = this.callsignUi;
+        if (!ui) return;
+
+        ui.dialog.classList.add("hidden");
+
+        try {
+            ui.input.blur();
+        } catch {
+            // Ignore.
+        }
+
+        this.call("dialog", false);
+    }
+
+    submitNameDialog() {
+        const result = this.setName(this.callsignUi.input.value);
+
+        if (result.ok) {
+            this.closeNameDialog();
+        } else {
+            this.showNameError(nameProblem(result.reason));
+        }
+    }
+
+    showNameError(text) {
+        const el = this.callsignUi?.error;
+        if (el && el.textContent !== text) el.textContent = text;
+    }
+
+    /**
+     * Change this pilot's callsign.
+     * @returns {{ ok: boolean, name: string, reason?: string }}
+     */
+    setName(raw) {
+        const result = checkName(raw);
+
+        if (!result.ok) return result;
+
+        this.name = result.name;
+        savePilotName(result.name);
+        this.updateCallsignButton();
+
+        // In a lobby: tell everyone now. (Otherwise it's used on the
+        // next join.)
+        if (this.isOnline()) {
+            this.send({ t: "n", name: result.name });
+        }
+
+        return result;
+    }
+
+    // A pilot's callsign changed (ours, confirmed or refused; or
+    // someone else's).
+    onName(data) {
+        const id = String(data.id);
+        const name = String(data.name ?? "").slice(0, 16);
+
+        if (!name) return;
+
+        if (id === this.selfId) {
+            this.selfName = name;
+
+            if (data.rejected) {
+                // The server's copy stands; show it, and say why.
+                this.name = name;
+                savePilotName(name);
+                this.updateCallsignButton();
+
+                this.call(
+                    "message",
+                    data.rejected === "wait"
+                        ? "WAIT A MOMENT BEFORE CHANGING CALLSIGN AGAIN"
+                        : `${nameProblem(data.rejected)} — STILL ${name}`
+                );
+            } else {
+                this.call("message", `CALLSIGN SET: ${name}`);
+            }
+
+            this.renderLeaderboard();
+            return;
+        }
+
+        const info = this.roster.get(id);
+        if (!info) return;
+
+        info.name = name;
+
+        const remote = this.remotes.get(id);
+
+        if (remote) {
+            remote.name = name;
+            this.refreshLabel(remote);
+        }
+
+        this.renderLeaderboard();
+    }
+
+    // Redraw a pilot's name tag.
+    refreshLabel(remote) {
+        const visual = remote.visual;
+        if (!visual) return;
+
+        if (visual.label) {
+            visual.group.remove(visual.label);
+            visual.label.material.map?.dispose?.();
+            visual.label.material.dispose?.();
+        }
+
+        visual.label = makeLabel(this.THREE, remote.name, remote.color);
+
+        if (visual.label) {
+            visual.label.position.set(0, 1, -2.1);
+            visual.group.add(visual.label);
+        }
+    }
+
+    // ---------------------------------------------------------
     // HUD
     // ---------------------------------------------------------
 
@@ -1280,19 +1504,31 @@ function offlineRequested() {
     }
 }
 
+const NAME_KEY = "asteroidDefensePilotName";
+
+// The saved callsign, if it still passes the rules; otherwise a new
+// random one.
 function loadPilotName() {
-    const key = "asteroidDefensePilotName";
-
     try {
-        const saved = localStorage.getItem(key);
-        if (saved) return saved;
+        const saved = localStorage.getItem(NAME_KEY);
+        const result = checkName(saved);
 
-        const name = `PILOT-${Math.floor(1000 + Math.random() * 9000)}`;
-        localStorage.setItem(key, name);
+        if (saved && result.ok) return result.name;
+
+        const name = randomCallsign();
+        localStorage.setItem(NAME_KEY, name);
 
         return name;
     } catch {
-        return `PILOT-${Math.floor(1000 + Math.random() * 9000)}`;
+        return randomCallsign();
+    }
+}
+
+function savePilotName(name) {
+    try {
+        localStorage.setItem(NAME_KEY, name);
+    } catch {
+        // Storage unavailable: the name lasts for this visit.
     }
 }
 

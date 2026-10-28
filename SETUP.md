@@ -50,6 +50,15 @@ can award themselves points.
 - **Rounds.** Each round lasts 15 minutes. A live top 5 sits under the high
   score. At 0:00 the black hole opens and carries everyone out, a results
   screen names the winner, and a new round starts about 20 seconds later.
+- **All-time leaderboard.** The server keeps the 10 best scores ever set in any
+  lobby:
+  - the #1 score shows as "ALL-TIME" under the high score
+  - the top 10 shows on the start and game-over screens, and the top 5 on the
+    round results, where a new record is announced
+  - scores are recorded at the end of each round, and when a player leaves
+    mid-round
+  - only online scores count, because the server calculates them; solo scores
+    stay in the player's own HIGH SCORE.
 - **Weapons.** The laser unlocks at 15,000 points and rockets at 20,000. You use
   one at a time:
   - switch with 1 / 2 / 3, Q / E or the mouse wheel; on a phone, tap the weapon
@@ -60,25 +69,25 @@ can award themselves points.
   and hits exactly what is drawn, including anything that moves into it while
   it's visible.
 
+### Callsigns
+
+Each player can set the name others see: tap the callsign under the logo, type
+a new one and press SAVE. It's saved in that browser and applies straight
+away, even mid-round. Names are 2-14 letters, digits, spaces, `-` or `_`.
+
+Curse words and slurs are blocked by `public/name-filter.js`, which the game
+uses for instant feedback and the server uses to have the final say. It also
+catches common disguises such as `SH1T`, `F_U_C_K` and `FUUUCK`, without
+blocking clean words like CLASSIC, HELLO or COCKPIT.
+
+No word filter is perfect. If a bad name gets through, add the word to
+`BLOCKED_STRONG` (matched anywhere in a name) or `BLOCKED_WORDS` (matched only
+as a whole word) at the top of that file and redeploy. Players using a name
+that's now blocked get a new `PILOT-####` name the next time they join.
+
 ### Controls on phones
 
-The touch controls are a floating thumbstick:
-- **Steer:** put a finger down anywhere and slide it. Up/down is thrust
-  forward/reverse, left/right is turn. How far you slide sets how fast, so small
-  slides give fine control.
-- **Coast:** lift the finger and the ship coasts to a stop.
-- **Fire:** tap for one shot. Hold a finger still to keep firing. Put a second
-  finger down while steering to fire on the move.
-
-To change how the thumbstick feels, edit `TOUCH_CONFIG` near the top of
-`game.js`:
-
-| Setting | What it does |
-|---|---|
-| `stickRadius` | How far you slide for full power |
-| `deadZone` | How much movement near the center is ignored |
-| `turnRate` | How fast the ship turns at full slide |
-| `turnSmoothing` | Higher is snappier, lower is smoother |
+Drag a finger to steer the ship toward it and thrust; tap to fire.
 
 ### Offline mode
 
@@ -112,6 +121,7 @@ asteroid-defense/
 │   ├── game.js
 │   ├── style.css
 │   ├── multiplayer.js
+│   ├── name-filter.js    Callsign rules (also used by the server)
 │   └── assets/           ← copy your GLB models and PNGs here
 └── test/                 Automated tests (no Cloudflare account needed)
 ```
@@ -120,8 +130,23 @@ asteroid-defense/
 
 ### 1. Install Node.js
 
-You need Node.js 20 or newer. Check with `node --version`. If you don't have
-it, install the LTS version from https://nodejs.org.
+Wrangler needs Node.js 22 or newer. Check with `node --version`.
+
+On Linux, the version from the system package manager (`apt`) is often too
+old. The easiest way to get a current one is nvm, which installs Node in your
+home folder:
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+source ~/.bashrc
+nvm install --lts
+node --version   # v22 or newer
+```
+
+On macOS or Windows, install the LTS version from https://nodejs.org.
+
+If you ran `npm install` with an older Node, delete `node_modules` and
+`package-lock.json` and run it again.
 
 ### 2. Put your assets in place
 
@@ -188,6 +213,8 @@ section of `wrangler.jsonc`).
 
 - Visit `https://<your-worker-url>/api/health`. It should show
   `{"ok":true,"protocol":2}`.
+- Visit `https://<your-worker-url>/api/leaderboard`. It should show
+  `{"top":[]}` until the first online round ends, then the scores.
 - Open the game on two devices. Both should show ONLINE · 2 PILOTS.
 - Watch the server's logs live with `npx wrangler tail`.
 
@@ -222,13 +249,15 @@ Cloudflare account, the models or a browser.
   - rounds and results, and reconnecting with the same score
   - the 20-player cap, refused and abusive input, and errors inside the
     simulation
+  - the all-time leaderboard: ordering, one entry per player per round,
+    surviving restarts, and failing softly
 - **The game itself** (`test/game.test.mjs`):
   - offline play and joining a lobby
   - shooting shared asteroids and switching weapons
   - death and respawn, the end-of-round finale, and losing and regaining the
     connection
   - the solo laser and rockets
-  - the touch thumbstick and firing, and the unchanged mouse controls
+  - the all-time leaderboard, and the mouse controls
 
 Step 6 is the check against Cloudflare's real runtime and real rendering.
 

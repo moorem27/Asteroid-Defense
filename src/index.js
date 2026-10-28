@@ -5,7 +5,8 @@
 //   Matchmaker  One global instance. Keeps a list of open lobbies and
 //               how full each one is, and hands every new player a
 //               lobby: the fullest one with room (so players end up
-//               together), or a new one when they are all full.
+//               together), or a new one when they are all full. It also
+//               keeps the all-time top 10 (see ALL-TIME LEADERBOARD).
 //
 //   Lobby       One instance per lobby, up to MAX_PLAYERS players.
 //               Owns the shared world: it simulates the asteroids,
@@ -35,6 +36,9 @@
 // ============================================================
 
 import { DurableObject } from "cloudflare:workers";
+
+// Callsign rules, shared with the game (public/name-filter.js).
+import { checkName, randomCallsign } from "../public/name-filter.js";
 
 // Must match PROTOCOL_VERSION in public/multiplayer.js.
 const PROTOCOL_VERSION = 2;
@@ -67,6 +71,18 @@ const RATE_CAPACITY = 50;
 const RATE_PER_SECOND = 35;
 
 const MATCHMAKER_NAME = "global";
+
+// A player can change their callsign at most this often.
+const RENAME_COOLDOWN_MS = 3000;
+
+// ---- All-time leaderboard ---------------------------------------------
+
+// How many all-time scores are kept and shown.
+const RECORDS_SIZE = 10;
+
+// GET /api/leaderboard answers are cached at Cloudflare's edge for this
+// many seconds, so page loads rarely reach the Matchmaker.
+const RECORDS_CACHE_SECONDS = 30;
 
 const PLAYER_COLORS = [
     "#ff5ec8", "#ffd84a", "#7dff6b", "#ff8a3d", "#b18cff",
@@ -189,11 +205,15 @@ const ROGUE = {
 // ============================================================
 
 export default {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
         if (url.pathname === "/api/ws") {
             return handleJoin(request, env, url);
+        }
+
+        if (url.pathname === "/api/leaderboard") {
+            return handleLeaderboard(request, env, ctx, url);
         }
 
         if (url.pathname === "/api/health") {
@@ -213,6 +233,46 @@ export default {
 };
 
 const LOBBY_ID_PATTERN = /^lobby-[0-9a-f-]{36}$/;
+
+// The all-time top 10, for the start screen and HUD. Cached briefly at
+// the edge, so thousands of page loads cost only a few Matchmaker
+// requests. (The cache only works on a custom domain; on workers.dev
+// every request goes to the Matchmaker, which is still cheap.)
+async function handleLeaderboard(request, env, ctx, url) {
+    if (request.method !== "GET") {
+        return new Response("Method not allowed", { status: 405 });
+    }
+
+    const cache = typeof caches !== "undefined" ? caches.default : null;
+    const cacheKey = new Request(`${url.origin}/api/leaderboard`);
+
+    try {
+        if (cache) {
+            const cached = await cache.match(cacheKey);
+            if (cached) return cached;
+        }
+
+        const matchmaker = env.MATCHMAKER.get(
+            env.MATCHMAKER.idFromName(MATCHMAKER_NAME)
+        );
+
+        const top = await matchmaker.topScores();
+
+        const response = Response.json(
+            { top },
+            { headers: { "Cache-Control": `public, max-age=${RECORDS_CACHE_SECONDS}` } }
+        );
+
+        if (cache && ctx?.waitUntil) {
+            ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
+        }
+
+        return response;
+    } catch (error) {
+        console.error("Leaderboard failed:", error);
+        return Response.json({ top: [] }, { status: 503 });
+    }
+}
 
 async function handleJoin(request, env, url) {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -285,6 +345,10 @@ export class Matchmaker extends DurableObject {
 
         this.lobbies = new Map();
 
+        // All-time top scores, best first:
+        // { key, name, color, score, kills, at }
+        this.records = [];
+
         ctx.blockConcurrencyWhile(async () => {
             const saved = await ctx.storage.get("lobbies");
 
@@ -293,7 +357,83 @@ export class Matchmaker extends DurableObject {
                     this.lobbies.set(id, entry);
                 }
             }
+
+            const records = await ctx.storage.get("records");
+
+            if (Array.isArray(records)) {
+                this.records = records;
+            }
         });
+    }
+
+    // ---------------------------------------------------------
+    // ALL-TIME LEADERBOARD
+    // Lobbies report scores at the end of every round, and when a
+    // player leaves mid-round. Only scores calculated by the server
+    // are reported, so nobody can submit a fake one. Each entry has a
+    // key for one player's one round; a later report for the same
+    // player and round (e.g. they left, rejoined and finished) replaces
+    // it if higher. Called only by Lobby objects, never by browsers.
+    // ---------------------------------------------------------
+
+    // entries: [{ key, name, color, score, kills }]
+    // Returns the top list (with keys, for the lobby to match its own
+    // players) and the score needed to get onto it.
+    async recordScores(entries) {
+        let changed = false;
+
+        for (const entry of Array.isArray(entries) ? entries.slice(0, 40) : []) {
+            const score = Math.floor(Number(entry?.score));
+
+            if (!(score > 0) || typeof entry.key !== "string") continue;
+
+            const record = {
+                key: entry.key.slice(0, 120),
+                name: String(entry.name ?? "PILOT").slice(0, 16),
+                color: typeof entry.color === "string" ? entry.color.slice(0, 9) : "#ffffff",
+                score,
+                kills: Math.max(0, Math.floor(Number(entry.kills) || 0)),
+                at: Date.now()
+            };
+
+            const existing = this.records.find((r) => r.key === record.key);
+
+            if (existing) {
+                if (record.score > existing.score) {
+                    Object.assign(existing, record);
+                    changed = true;
+                }
+
+                continue;
+            }
+
+            if (this.records.length < RECORDS_SIZE || score > this.minimumScore()) {
+                this.records.push(record);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            // Best first; ties go to whoever got there first.
+            this.records.sort((a, b) => b.score - a.score || a.at - b.at);
+            this.records.length = Math.min(this.records.length, RECORDS_SIZE);
+
+            await this.ctx.storage.put("records", this.records);
+        }
+
+        return { top: this.records, minimum: this.minimumScore() };
+    }
+
+    // The public list (no keys).
+    async topScores() {
+        return this.records.map(publicRecord);
+    }
+
+    // The score to beat to get onto the list.
+    minimumScore() {
+        return this.records.length < RECORDS_SIZE
+            ? 0
+            : this.records[this.records.length - 1].score;
     }
 
     async assign(exclude = [], preferred = null) {
@@ -429,6 +569,11 @@ export class Lobby extends DurableObject {
         this.lastStepAt = 0;
         this.stepCount = 0;
         this.lastStaleCheck = 0;
+
+        // The score needed to reach the all-time top 10, as last heard
+        // from the Matchmaker. Players who leave below it aren't
+        // reported, which saves a request.
+        this.recordMinimum = 0;
 
         this.resetWorld();
         this.round = null;
@@ -602,6 +747,12 @@ export class Lobby extends DurableObject {
 
         this.ships.delete(ws);
 
+        // A player leaving mid-round still gets their score onto the
+        // all-time list.
+        if (ship && this.round?.phase === "playing" && ship.score > this.recordMinimum) {
+            this.reportRecords([ship]).catch(() => {});
+        }
+
         if (ship && ship.token && this.round) {
             this.departed.set(ship.token, {
                 round: this.round.n,
@@ -706,6 +857,7 @@ export class Lobby extends DurableObject {
             lastHitAt: 0,
 
             lastFire: [0, 0, 0],
+            lastRename: 0,
 
             nextAsteroidAt: now + 1000,
             nextMineAt: now + randomRange(6, 10) * 1000,
@@ -767,11 +919,48 @@ export class Lobby extends DurableObject {
                 safeSend(ws, { t: "pong", now });
                 break;
 
+            case "n":
+                this.onRename(ws, ship, data, now);
+                break;
+
             default:
                 break;
         }
 
         this.startTimer();
+    }
+
+    // A player changing their callsign mid-game. The server's filter
+    // has the final say; a rejected name is never shown to anyone.
+    onRename(ws, ship, data, now) {
+        if (now - ship.lastRename < RENAME_COOLDOWN_MS) {
+            safeSend(ws, { t: "name", id: ship.id, name: ship.name, rejected: "wait" });
+            return;
+        }
+
+        ship.lastRename = now;
+
+        const result = checkName(data.name);
+
+        if (!result.ok) {
+            safeSend(ws, { t: "name", id: ship.id, name: ship.name, rejected: result.reason });
+            return;
+        }
+
+        if (result.name === ship.name) {
+            safeSend(ws, { t: "name", id: ship.id, name: ship.name });
+            return;
+        }
+
+        ship.name = result.name;
+
+        const info = readAttachment(ws);
+
+        if (info) {
+            ws.serializeAttachment({ ...info, name: result.name });
+        }
+
+        this.broadcast({ t: "name", id: ship.id, name: result.name });
     }
 
     onState(ship, data, now) {
@@ -1023,6 +1212,45 @@ export class Lobby extends DurableObject {
         this.rogue = newRogue();
 
         this.broadcast({ t: "round", now, round: this.roundInfo() });
+
+        // Everyone's final score goes to the all-time list; the updated
+        // list follows the results a moment later.
+        this.reportRecords([...this.ships.values()])
+            .then((top) => {
+                if (top) this.broadcast({ t: "records", top });
+            })
+            .catch(() => {});
+    }
+
+    // The key for one player's one round: the same player reconnecting
+    // during a round keeps the same key.
+    recordKey(ship) {
+        const who = ship.token ?? `id-${ship.id}`;
+        return `${who}:${this.lobbyId ?? "lobby"}:${this.round?.startedAt ?? 0}`;
+    }
+
+    // Send scores to the Matchmaker. Returns the all-time list (with
+    // this lobby's own players marked by id), or null on failure.
+    async reportRecords(ships) {
+        const entries = ships.map((s) => ({
+            key: this.recordKey(s),
+            name: s.name,
+            color: s.color,
+            score: s.score,
+            kills: s.kills
+        }));
+
+        const matchmaker = this.env.MATCHMAKER.get(
+            this.env.MATCHMAKER.idFromName(MATCHMAKER_NAME)
+        );
+
+        const { top, minimum } = await matchmaker.recordScores(entries);
+
+        this.recordMinimum = Number(minimum) || 0;
+
+        const idByKey = new Map(ships.map((s) => [this.recordKey(s), s.id]));
+
+        return top.map((r) => ({ ...publicRecord(r), id: idByKey.get(r.key) ?? null }));
     }
 
     updateRound(now) {
@@ -2041,6 +2269,11 @@ function newRogue(first = true) {
     };
 }
 
+// What players see of an all-time record (the key stays private).
+function publicRecord(r) {
+    return { name: r.name, color: r.color, score: r.score, kills: r.kills, at: r.at };
+}
+
 // [id, x, z, vx, vz, size, model, scale, spin, hp]
 function asteroidArray(a) {
     return [
@@ -2144,14 +2377,11 @@ function safeSendRaw(ws, payload) {
     }
 }
 
+// A callsign that passes the rules, or a random PILOT-#### if not.
 function sanitizeName(raw) {
-    const cleaned = String(raw ?? "")
-        .toUpperCase()
-        .replace(/[^A-Z0-9 _-]/g, "")
-        .trim()
-        .slice(0, 16);
+    const result = checkName(raw);
 
-    return cleaned || `PILOT-${Math.floor(1000 + Math.random() * 9000)}`;
+    return result.ok ? result.name : randomCallsign();
 }
 
 function sanitizeToken(raw) {
@@ -2161,4 +2391,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS };
+export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE };

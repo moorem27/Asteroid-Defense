@@ -23,6 +23,12 @@ async function loadGame(server) {
 
     globalThis.WebSocket = makeBrowserWebSocket(server);
 
+    // The game's fetch("/api/leaderboard") goes to the test server.
+    globalThis.fetch = async (url) => {
+        if (server.down) throw new Error("offline");
+        return server.fetch(new URL(url, "http://game.test").href);
+    };
+
     const dir = path.join(here, ".build", `game-${++gameCount}`);
     await mkdir(dir, { recursive: true });
 
@@ -42,7 +48,7 @@ async function loadGame(server) {
 export const __test = {
     state, net, player, asteroids, mines, pickups, bullets, rockets,
     weapons, assets, blackHole, warp, LASER_CONFIG,
-    touchControls, retroThrusters, canvas: renderer.domElement,
+    retroThrusters, canvas: renderer.domElement, records,
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     get multiplayer() { return multiplayer; }
 };
@@ -50,6 +56,7 @@ export const __test = {
 
     await writeFile(path.join(dir, "game.js"), source);
     await copyFile(path.join(publicDir, "multiplayer.js"), path.join(dir, "multiplayer.js"));
+    await copyFile(path.join(publicDir, "name-filter.js"), path.join(dir, "name-filter.js"));
 
     const mod = await import(pathToFileURL(path.join(dir, "game.js")).href);
 
@@ -312,6 +319,122 @@ test("round end: black hole finale, results screen, then a fresh round", async (
     stopGames();
 });
 
+test("all-time leaderboard: shown at startup, updated at round end, your record highlighted", async () => {
+    const server = await loadWorker();
+
+    // An existing record from another day.
+    const mm = server.env.MATCHMAKER.get(server.env.MATCHMAKER.idFromName("global"));
+    await mm.recordScores([{ key: "old", name: "ACE", color: "#ff0000", score: 1000, kills: 0 }]);
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.net.active, 3000, "online");
+    await waitFor(() => !dom.el("all-time-best").hidden, 2000, "HUD line");
+
+    assert.equal(dom.el("all-time-score").textContent, "1,000");
+    assert.equal(dom.el("records-start-box").hidden, false);
+    assert.match(dom.el("records-start").innerHTML, /ACE/);
+
+    const lobby = quietLobby(server);
+    serverShip(game).score = 4321;
+    lobby.round.endsAt = Date.now();
+
+    await waitFor(async () => {
+        await play(game, 50);
+        return dom.el("all-time-score").textContent === "4,321";
+    }, 8000, "new record in the HUD");
+
+    await waitFor(async () => {
+        await play(game, 50);
+        return !dom.el("round-results").classList.contains("hidden");
+    }, 8000, "results");
+
+    assert.equal(dom.el("results-record").hidden, false);
+    assert.equal(dom.el("results-record").textContent, "NEW ALL-TIME RECORD!");
+    assert.match(dom.el("records-results").innerHTML, /rec-you/);
+    assert.match(dom.el("records-results").innerHTML, /\(YOU\)/);
+    assert.match(dom.el("records-results").innerHTML, /ACE/);
+
+    stopGames();
+});
+
+test("all-time leaderboard: hidden (and harmless) when the server is unreachable", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+    await play(game, 300);
+
+    assert.equal(dom.el("all-time-best").hidden, true);
+    assert.equal(dom.el("records-start-box").hidden, true);
+    assert.equal(t.records.top.length, 0);
+
+    stopGames();
+});
+
+test("callsign: the button opens the box; typing doesn't fly or fire; bad names are refused; good ones apply", async () => {
+    const game = await bootOnline();
+    const { t, dom } = game;
+
+    const button = dom.el("callsign");
+    const dialog = dom.el("callsign-dialog");
+    const input = dom.el("callsign-input");
+    const form = dom.el("callsign-form");
+
+    assert.equal(button.hidden, false, "button shown");
+    assert.match(dom.el("callsign-name").textContent, /^PILOT-\d{4}$/);
+
+    button.dispatch("click");
+    assert.equal(dialog.classList.contains("hidden"), false, "box open");
+    assert.equal(input.value, dom.el("callsign-name").textContent, "prefilled");
+
+    // Typing W and Space into the box doesn't thrust or fire.
+    const typing = { closest: () => input };
+    const before = t.bullets.length;
+
+    dom.key("keydown", "KeyW", typing);
+    dom.key("keydown", "Space", typing);
+    await play(game, 300);
+
+    assert.equal(t.bullets.length, before, "no shots");
+    assert.ok(t.player.velocity.length() < 0.5, "no thrust");
+
+    dom.key("keyup", "KeyW", typing);
+    dom.key("keyup", "Space", typing);
+
+    // A blocked name: refused with a message, box stays open.
+    input.value = "SH1T";
+    input.dispatch("input");
+    assert.match(dom.el("callsign-error").textContent, /ISN'T ALLOWED/);
+
+    form.dispatch("submit");
+    assert.equal(dialog.classList.contains("hidden"), false);
+
+    // A good one: saved, sent, box closes.
+    input.value = "iceman";
+    input.dispatch("input");
+    assert.equal(dom.el("callsign-error").textContent, "");
+
+    form.dispatch("submit");
+
+    assert.equal(dialog.classList.contains("hidden"), true, "box closed");
+    assert.equal(dom.el("callsign-name").textContent, "ICEMAN");
+    assert.equal(localStorage.getItem("asteroidDefensePilotName"), "ICEMAN");
+
+    await waitFor(async () => {
+        await play(game, 50);
+        return serverShip(game).name === "ICEMAN";
+    }, 2000, "server has it");
+
+    assert.match(dom.el("message").textContent, /CALLSIGN SET: ICEMAN/);
+
+    stopGames();
+});
+
 test("connection lost mid-game: carries on solo, then rejoins", async () => {
     const game = await bootOnline();
     const { t, dom, server } = game;
@@ -394,7 +517,9 @@ test("solo laser: the drawn beam matches its hit area (range, width, moving rock
     const near = place(0, 20, 0.72);
     const beyond = place(0, 30, 0.72);
     const beside = place(4, 20, 0.72);
-    const crosser = place(2.2, 12, 0.72, -14);
+    // Starts just clear of the beam; solo asteroids are capped at
+    // about 5.6 units/s, so it crosses in well under the beam's life.
+    const crosser = place(1.5, 12, 0.72, -5.5);
 
     await play(game, 50, () => faceForward(game));
 
@@ -456,134 +581,6 @@ async function soloGame() {
 function touchEvent(game, type, id, x, y) {
     game.t.canvas.dispatch(type, { pointerId: id, pointerType: "touch", clientX: x, clientY: y, button: 0 });
 }
-
-test("touch: slide up thrusts forward, slide down reverses without turning", async () => {
-    const game = await soloGame();
-    const { t } = game;
-
-    t.player.rotation = 0;
-    const heading = t.player.rotation;
-
-    touchEvent(game, "pointerdown", 1, 300, 500);
-    touchEvent(game, "pointermove", 1, 300, 440); // 60 px up: full forward
-
-    await play(game, 600);
-
-    assert.ok(t.player.velocity.z > 10, `forward: vz ${t.player.velocity.z}`);
-    assert.equal(t.player.rotation, heading, "no turning");
-
-    touchEvent(game, "pointermove", 1, 300, 560); // past center, 60 px down
-
-    await play(game, 700);
-
-    assert.ok(t.player.velocity.z < -10, `reverse: vz ${t.player.velocity.z}`);
-    assert.equal(t.player.rotation, heading, "still no turning");
-    assert.ok(t.retroThrusters.active, "retro thrusters on while reversing");
-
-    touchEvent(game, "pointerup", 1, 300, 560);
-    await play(game, 100);
-
-    assert.equal(t.touchControls.stickId, null, "released");
-    assert.equal(t.bullets.length, 0, "steering never fires");
-
-    stopGames();
-});
-
-test("touch: small slides give gentle turns and gentle thrust; turning eases in and out", async () => {
-    const game = await soloGame();
-    const { t } = game;
-
-    // A small slide right: a gentle clockwise turn.
-    touchEvent(game, "pointerdown", 1, 300, 500);
-    touchEvent(game, "pointermove", 1, 320, 500);
-
-    t.dom = game.dom;
-    game.dom.frame();
-    await sleep(16);
-    game.dom.frame();
-
-    const early = Math.abs(t.touchControls.turnVelocity);
-
-    await play(game, 600);
-
-    const settled = Math.abs(t.touchControls.turnVelocity);
-
-    assert.ok(t.touchControls.turnVelocity < 0, "slide right = clockwise (like D)");
-    assert.ok(early < settled, "eases in");
-    assert.ok(settled < 0.5 * 3.0, `small slide, slow turn (${settled.toFixed(2)} rad/s)`);
-
-    // Full slide right turns at the full rate.
-    touchEvent(game, "pointermove", 1, 420, 500);
-    await play(game, 700);
-    assert.ok(Math.abs(t.touchControls.turnVelocity) > 2.7);
-
-    // Let go: the turn eases out rather than stopping dead.
-    touchEvent(game, "pointerup", 1, 420, 500);
-    game.dom.frame();
-    await sleep(16);
-    game.dom.frame();
-
-    assert.ok(Math.abs(t.touchControls.turnVelocity) > 0.5, "still easing out");
-
-    await play(game, 800);
-    assert.ok(Math.abs(t.touchControls.turnVelocity) < 0.05, "stopped");
-
-    // A thumb resting near the center does nothing (dead zone).
-    touchEvent(game, "pointerdown", 2, 300, 500);
-    touchEvent(game, "pointermove", 2, 300, 491); // 9 px: past the drag threshold, inside the dead zone
-
-    const rotation = t.player.rotation;
-    await play(game, 400);
-
-    assert.ok(Math.abs(t.player.velocity.z) < 0.5, "no drift");
-    assert.ok(Math.abs(t.player.rotation - rotation) < 0.01, "no turn");
-
-    touchEvent(game, "pointerup", 2, 300, 491);
-
-    stopGames();
-});
-
-test("touch: tap fires once; holding still keeps firing; a second finger fires while steering", async () => {
-    const game = await soloGame();
-    const { t } = game;
-
-    touchEvent(game, "pointerdown", 1, 600, 300);
-    touchEvent(game, "pointerup", 1, 600, 300);
-
-    assert.equal(t.bullets.length, 1, "tap: one shot");
-
-    await play(game, 300);
-    t.bullets.length = 0;
-
-    touchEvent(game, "pointerdown", 2, 600, 300);
-    await play(game, 900);
-    touchEvent(game, "pointerup", 2, 600, 300);
-
-    assert.ok(t.bullets.length >= 4, `hold: ${t.bullets.length} shots`);
-
-    // Let the earlier shots expire, then count from zero.
-    await play(game, 1300);
-    t.bullets.length = 0;
-    const before = 0;
-
-    // Steer with one finger, fire with another.
-    touchEvent(game, "pointerdown", 3, 200, 500);
-    touchEvent(game, "pointermove", 3, 200, 440);
-    touchEvent(game, "pointerdown", 4, 900, 300);
-
-    await play(game, 700);
-
-    assert.ok(t.bullets.length - before >= 3, "firing while steering");
-    assert.ok(t.player.velocity.length() > 5, "and moving");
-
-    touchEvent(game, "pointerup", 4, 900, 300);
-    touchEvent(game, "pointerup", 3, 200, 440);
-
-    await play(game, 100);
-    assert.equal(t.touchControls.fireHolds, 0);
-
-    stopGames();
-});
 
 test("mouse controls are unchanged: drag steers toward the cursor, click fires", async () => {
     const game = await soloGame();

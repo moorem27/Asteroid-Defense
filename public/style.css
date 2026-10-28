@@ -243,6 +243,126 @@ pointer-events: none;
 
 .results-next { margin-top: 22px; color: var(--cyan); font-size: 8px; }
 
+/* ============================================================
+   ALL-TIME LEADERBOARD (from the server)
+   ============================================================ */
+
+.all-time-best { margin-top: 4px; color: var(--yellow); font-size: 7px; line-height: 1.6; white-space: nowrap; opacity: 0.9; }
+
+.all-time-best[hidden] { display: none; }
+
+.all-time-best span { color: white; }
+
+.records { margin-top: 14px; width: min(320px, 100%); }
+
+.records[hidden] { display: none; }
+
+.records-title { margin-bottom: 6px; color: var(--yellow); font-size: 8px; letter-spacing: 1px; }
+
+.records-list { margin: 0; padding: 0; list-style: none; font-size: 8px; line-height: 2; }
+
+.records-list li { display: grid; grid-template-columns: 3ch minmax(0, 1fr) auto; gap: 8px; text-align: left; }
+
+.records-list .rec-rank { color: var(--cyan); }
+
+.records-list .rec-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.records-list .rec-score { text-align: right; color: white; }
+
+.records-list .rec-you { text-shadow: 0 0 10px rgba(255, 255, 255, 0.7); }
+
+.records-list .rec-you .rec-score { color: var(--yellow); }
+
+#round-results .records { margin-top: 18px; }
+
+.results-record { margin-top: 14px; color: var(--yellow); font-size: clamp(9px, 2vw, 13px); text-shadow: 0 0 12px var(--yellow); animation: match-clock-pulse 0.8s ease-in-out infinite alternate; }
+
+.results-record[hidden] { display: none; }
+
+/* ============================================================
+   CALLSIGN (your name online)
+   ============================================================ */
+
+.callsign {
+    margin-top: 6px;
+    padding: 4px 8px;
+    border: 1px solid rgba(66, 245, 242, 0.45);
+    background: rgba(7, 12, 35, 0.55);
+    color: white;
+    font-family: inherit;
+    font-size: 7px;
+    letter-spacing: 1px;
+    cursor: pointer;
+
+    /* The HUD itself ignores the pointer; this button doesn't. */
+    pointer-events: auto;
+    touch-action: manipulation;
+}
+
+.callsign[hidden] { display: none; }
+
+.callsign .callsign-edit { margin-left: 4px; color: var(--cyan); }
+
+.callsign-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(2, 3, 15, 0.75);
+}
+
+.callsign-box {
+    width: min(340px, 100%);
+    padding: 20px;
+    border: 2px solid var(--cyan);
+    background: var(--panel);
+    text-align: center;
+}
+
+.callsign-title { display: block; margin-bottom: 14px; color: var(--cyan); font-size: 10px; }
+
+.callsign-input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid var(--pink);
+    background: rgba(255, 63, 159, 0.08);
+    color: white;
+    font-family: inherit;
+    font-size: 14px;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    outline: none;
+
+    /* Typing and selecting must work here, unlike the rest of the page. */
+    -webkit-user-select: text;
+    user-select: text;
+    touch-action: manipulation;
+}
+
+.callsign-input:focus { box-shadow: 0 0 10px rgba(255, 63, 159, 0.6); }
+
+.callsign-error { min-height: 2.4em; margin-top: 10px; color: var(--yellow); font-size: 8px; line-height: 1.6; }
+
+.callsign-buttons { display: flex; gap: 10px; margin-top: 6px; }
+
+.callsign-button {
+    flex: 1;
+    padding: 12px 8px;
+    border: 1px solid var(--cyan);
+    background: transparent;
+    color: white;
+    font-family: inherit;
+    font-size: 9px;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.callsign-button.primary { border-color: var(--pink); background: rgba(255, 63, 159, 0.15); }
+
 /* Multiplayer connection status, under the logo. */
 #net-status { margin-top: 6px; font-size: 7px; line-height: 1.6; letter-spacing: 0.5px; white-space: nowrap; color: var(--cyan); opacity: 0.9; }
 
@@ -377,6 +497,19 @@ background: rgba(2, 3, 15, 0.92);
 #net-status {
     font-size: 5px;
     margin-top: 3px;
+}
+
+.callsign {
+    font-size: 6px;
+    padding: 5px 7px;
+}
+
+.all-time-best {
+    font-size: 6px;
+}
+
+.records-list {
+    font-size: 7px;
 }
 
 .leaderboard {
