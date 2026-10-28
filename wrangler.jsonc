@@ -1,0 +1,42 @@
+{
+    // Name of the Worker in your Cloudflare dashboard. If your game is
+    // already deployed as a Worker, use that Worker's existing name so
+    // this replaces it instead of creating a second one.
+    "name": "black-sea-fff5",
+
+    "main": "src/index.js",
+    "compatibility_date": "2025-10-01",
+
+    // The game's files (index.html, game.js, style.css, multiplayer.js
+    // and the assets folder) are served from ./public.
+    // /api/* always goes to the Worker code first.
+    "assets": {
+        "directory": "./public",
+        "binding": "ASSETS",
+        "run_worker_first": ["/api/*"]
+    },
+
+    "durable_objects": {
+        "bindings": [
+            { "name": "MATCHMAKER", "class_name": "Matchmaker" },
+            { "name": "LOBBY", "class_name": "Lobby" }
+        ]
+    },
+
+    // Creates the two Durable Object classes on first deploy. SQLite
+    // storage is required on the Workers Free plan. Never edit or
+    // remove this entry once deployed; add a new tag for changes.
+    "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["Matchmaker", "Lobby"] }
+    ],
+
+    "observability": {
+        "enabled": true
+    }
+
+    // Optional: only accept multiplayer connections from your own
+    // site. Uncomment and list your domain(s).
+    // "vars": {
+    //     "ALLOWED_ORIGINS": "https://asteroid-defense.example.workers.dev"
+    // }
+}

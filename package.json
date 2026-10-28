@@ -1,0 +1,13 @@
+{
+    "name": "asteroid-defense",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "wrangler dev",
+        "deploy": "wrangler deploy",
+        "test": "node test/multiplayer.test.mjs && node test/game.test.mjs"
+    },
+    "devDependencies": {
+        "wrangler": "^4.0.0"
+    }
+}

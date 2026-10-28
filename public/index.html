@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!--
+        Fixed scale: no pinch- or double-tap zoom during play
+        (style.css also blocks zoom gestures for browsers that ignore
+        user-scalable). viewport-fit covers phones with notches.
+    -->
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    >
+
+    <!-- Stop iOS turning numbers (like the score) into phone links. -->
+    <meta name="format-detection" content="telephone=no">
+
+    <title>ASTEROID DEFENSE// ARCADE SYSTEM</title>
+
+    <meta
+        name="description"
+        content="A retro space shooter featuring Blender-generated 3D spaceships and asteroids."
+    >
+
+    <link rel="stylesheet" href="./style.css">
+
+    <!--
+        IMPORT MAP
+        game.js imports "three" and "three/addons/...", and GLTFLoader
+        itself imports "three". Mapping both here guarantees a single
+        copy of Three.js is loaded.
+        To run offline, point these at local copies instead, keeping
+        the folder layout of the three package so GLTFLoader's
+        relative imports (../utils/...) still resolve.
+    -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+
+</head>
+
+<body>
+    <!-- WebGL game canvas is inserted into this container. -->
+    <div id="game-container"></div>
+
+    <!-- CRT overlay effects -->
+    <div id="crt-overlay" aria-hidden="true">
+        <div class="scanlines"></div>
+        <div class="screen-vignette"></div>
+    </div>
+
+    <!-- Damage flash -->
+    <div id="flash" aria-hidden="true"></div>
+
+    <!-- Top HUD -->
+    <header id="hud">
+        <div class="hud-block">
+            <div class="hud-label">SCORE</div>
+            <div class="hud-value" id="score">000000</div>
+        </div>
+
+        <div class="hud-block hud-center">
+            <div class="game-logo">ASTEROID <span>DEFENSE</span></div>
+            <div class="hud-subtitle">DEEP SPACE DEFENSE SYSTEM</div>
+
+            <!-- Multiplayer connection; multiplayer.js updates this. -->
+            <div id="net-status" data-state="connecting" role="status">
+                LINKING TO SERVER...
+            </div>
+        </div>
+
+        <div class="hud-block hud-right">
+            <div class="hud-label">HIGH SCORE</div>
+            <div class="hud-value" id="high-score">000000</div>
+
+            <!-- Lobby top 5 (online only); multiplayer.js fills it. -->
+            <ol id="leaderboard" class="leaderboard" hidden></ol>
+        </div>
+    </header>
+
+    <!-- Bottom HUD -->
+    <footer id="bottom-hud">
+        <div class="hud-block">
+            <div class="hud-label">HULL INTEGRITY</div>
+            <div class="lives-value" id="lives">♥ ♥ ♥</div>
+
+            <!-- Weapon switch: appears once a second weapon unlocks.
+                 Tap (or click) for the next weapon. -->
+            <button id="weapon-switch" class="weapon-switch" type="button" hidden
+                    aria-label="Switch weapon">
+                <span id="weapon-name">BLASTER</span>
+                <span class="weapon-cycle" aria-hidden="true">⇄</span>
+            </button>
+        </div>
+
+        <div class="hud-block hud-center">
+            <div class="hud-label">SYSTEM STATUS</div>
+            <div id="message" role="status" aria-live="polite">
+                INITIALIZING SYSTEMS...
+            </div>
+
+            <!-- Warp countdown; game.js shows and updates this. -->
+            <div id="warp-status" style="display: none">
+                WARP <span id="warp-time">0</span>s
+            </div>
+
+            <!-- Match clock: still alive when it runs out = victory. -->
+            <!-- Solo: the 5-minute match. Online: the 15-minute round. -->
+            <div id="match-clock">
+                <span id="match-label">TIME LEFT</span>
+                <span id="match-time">5:00</span>
+            </div>
+        </div>
+
+        <div class="hud-block hud-right">
+            <div class="hud-label" id="sector-label">SECTOR</div>
+            <div class="hud-value" id="sector">01</div>
+        </div>
+    </footer>
+
+    <!-- Initial title screen -->
+    <section id="start-screen" class="screen-panel">
+        <div class="panel-topline">★ GALACTIC ARCADE DIVISION ★</div>
+
+        <div class="title-art" aria-hidden="true">
+            <div class="title-star star-one">✦</div>
+            <div class="title-star star-two">✧</div>
+            <div class="title-star star-three">✦</div>
+            <div class="title-star star-four">·</div>
+
+            <div class="title-ship">
+                <div class="title-ship-wing left-wing"></div>
+                <div class="title-ship-body"></div>
+                <div class="title-ship-wing right-wing"></div>
+                <div class="title-engine"></div>
+            </div>
+        </div>
+
+        <h1>ASTEROID <span>DEFENSE</span></h1>
+
+        <p class="title-description">
+            THE FINAL FRONTIER IS NO PLACE FOR THE WEAK
+        </p>
+
+        <div class="title-divider">
+            <span></span>
+            <span class="divider-diamond">◆</span>
+            <span></span>
+        </div>
+
+        <div class="insert-coin">INSERT COIN TO CONTINUE</div>
+
+        <p class="mission-goal">
+            SOLO: SURVIVE THE FULL 5:00 TO WIN<br>
+            ONLINE: TOP SCORE AFTER 15:00 WINS
+        </p>
+
+        <button id="start-button" class="arcade-button" type="button">
+            <span class="button-icon">▶</span>
+            INSERT COIN
+        </button>
+
+        <div class="controls">
+            <div class="controls-heading">MISSION CONTROLS</div>
+
+            <div class="control-row">
+                <span class="keycap">W</span>
+                <span class="keycap">A</span>
+                <span class="keycap">S</span>
+                <span class="keycap">D</span>
+                <span class="control-description">MOVE SHIP</span>
+            </div>
+
+            <div class="control-row">
+                <span class="keycap mouse-key">MOUSE</span>
+                <span class="control-description">AIM WEAPONS</span>
+            </div>
+
+            <div class="control-row">
+                <span class="keycap mouse-key">CLICK</span>
+                <span class="keycap space-key">SPACE</span>
+                <span class="control-description">FIRE</span>
+            </div>
+
+            <div class="control-row">
+                <span class="keycap">SHIFT</span>
+                <span class="control-description">BOOST</span>
+            </div>
+
+            <div class="control-row">
+                <span class="keycap">1</span>
+                <span class="keycap">2</span>
+                <span class="keycap">3</span>
+                <span class="keycap">Q</span>
+                <span class="keycap">E</span>
+                <span class="control-description">SWITCH WEAPON</span>
+            </div>
+        </div>
+
+        <div class="panel-bottomline">
+            SYSTEM VERSION 1.0 // ALL SYSTEMS NOMINAL
+        </div>
+    </section>
+
+    <!-- Game over screen -->
+    <section id="game-over" class="screen-panel hidden">
+        <div class="panel-topline">★ SIGNAL LOST ★</div>
+
+        <div class="game-over-icon" aria-hidden="true">✦</div>
+
+        <h2>MISSION <span>FAILED</span></h2>
+
+        <p class="title-description">
+            YOUR SHIP HAS BEEN LOST IN DEEP SPACE
+        </p>
+
+        <div class="final-score-label">FINAL SCORE</div>
+
+        <div id="final-score" class="final-score">000000</div>
+
+        <button id="restart-button" class="arcade-button" type="button">
+            <span class="button-icon">↻</span>
+            PLAY AGAIN
+        </button>
+
+        <div class="panel-bottomline">
+            PILOT, YOUR GALAXY NEEDS YOU
+        </div>
+    </section>
+
+    <!-- End of an online round: winner and top 5. -->
+    <section id="round-results" class="hidden" aria-live="polite">
+        <div class="results-title">ROUND OVER</div>
+        <div id="results-winner" class="results-winner"></div>
+        <ol id="results-list" class="results-list"></ol>
+        <div class="results-next">
+            NEXT ROUND IN <span id="results-countdown">0:20</span>
+        </div>
+    </section>
+
+    <!-- The import map must appear before this module script. -->
+    <script type="module" src="./game.js"></script>
+</body>
+</html>
