@@ -1579,7 +1579,20 @@ const RETRO_CONFIG = {
     fadeIn: 14,
     fadeOut: 9,
 
-    // Gas puffs: one per nozzle every puffInterval seconds.
+    // Braking: the jets also fire whenever the ship is losing forward
+    // speed (coasting to a stop, braking, a warp ending), as they would
+    // in space. How hard they fire follows how fast it's slowing down:
+    // below brakeMin (units/s per second) they stay off; at brakeFull
+    // they fire at full strength, like holding reverse.
+    brakeMin: 4,
+    brakeFull: 60,
+
+    // How quickly the measured slowdown follows the ship (higher =
+    // quicker, lower = smoother).
+    brakeSmoothing: 12,
+
+    // Gas puffs: one per nozzle every puffInterval seconds (at full
+    // strength; fewer when braking gently).
     puffInterval: 0.11,
     puffLife: 0.55,
     puffScale: 0.16,
@@ -1591,7 +1604,15 @@ const retroThrusters = {
     group: null,
     jets: [],
     glows: [],
+
+    // Reverse is being held.
     active: false,
+
+    // Braking strength, 0-1, and the smoothed rate the ship is losing
+    // forward speed (see setRetroBrake).
+    brake: 0,
+    brakeRate: 0,
+
     level: 0,
     elapsed: 0,
     puffTimer: 0
@@ -1666,6 +1687,8 @@ function createRetroThrusters() {
     retroThrusters.jets = [];
     retroThrusters.glows = [];
     retroThrusters.active = false;
+    retroThrusters.brake = 0;
+    retroThrusters.brakeRate = 0;
     retroThrusters.level = 0;
     retroThrusters.elapsed = 0;
     retroThrusters.puffTimer = 0;
@@ -1710,6 +1733,41 @@ function createRetroThrusters() {
 
 function setRetroThrustersActive(active) {
     retroThrusters.active = active;
+
+    // Turning the jets off (black hole, ship destroyed) also stops
+    // the braking jets.
+    if (!active) retroThrusters.brake = 0;
+}
+
+// The jets' braking strength from how fast the ship is losing forward
+// speed. Called each frame with the velocity before and after that
+// frame's movement.
+function setRetroBrake(prevVX, prevVZ, dt) {
+    if (!(dt > 0)) return;
+
+    const forwardX = Math.sin(player.rotation);
+    const forwardZ = Math.cos(player.rotation);
+
+    // Acceleration this frame, and how much of it points backward
+    // (out of the nose, which is the way these jets push).
+    const ax = (player.velocity.x - prevVX) / dt;
+    const az = (player.velocity.z - prevVZ) / dt;
+
+    const backward = Math.max(0, -(ax * forwardX + az * forwardZ));
+
+    retroThrusters.brakeRate = THREE.MathUtils.damp(
+        retroThrusters.brakeRate,
+        backward,
+        RETRO_CONFIG.brakeSmoothing,
+        dt
+    );
+
+    retroThrusters.brake = clamp(
+        (retroThrusters.brakeRate - RETRO_CONFIG.brakeMin) /
+            (RETRO_CONFIG.brakeFull - RETRO_CONFIG.brakeMin),
+        0,
+        1
+    );
 }
 
 function updateRetroThrusters(dt) {
@@ -1719,8 +1777,13 @@ function updateRetroThrusters(dt) {
 
     if (!group) return;
 
-    // Fade toward on or off rather than snapping.
-    const target = retroThrusters.active && player.mesh ? 1 : 0;
+    // Full while reversing; while braking, as strong as the ship is
+    // slowing. Fades rather than snapping.
+    const target = !player.mesh
+        ? 0
+        : retroThrusters.active
+            ? 1
+            : retroThrusters.brake;
 
     retroThrusters.level = THREE.MathUtils.damp(
         retroThrusters.level,
@@ -1774,8 +1837,9 @@ function updateRetroThrusters(dt) {
         );
     }
 
-    // Leave a few faint gas puffs while firing.
-    if (!retroThrusters.active || !assets.retroPuff || !player.mesh) {
+    // Leave a few faint gas puffs while firing (fewer when braking
+    // gently).
+    if (target < 0.15 || !assets.retroPuff || !player.mesh) {
         return;
     }
 
@@ -1783,7 +1847,7 @@ function updateRetroThrusters(dt) {
 
     if (retroThrusters.puffTimer > 0) return;
 
-    retroThrusters.puffTimer = RETRO_CONFIG.puffInterval;
+    retroThrusters.puffTimer = RETRO_CONFIG.puffInterval / Math.max(0.3, target);
 
     for (const jet of retroThrusters.jets) {
         spawnRetroPuff(jet);
@@ -5658,8 +5722,12 @@ function updatePlayer(dt) {
     // Activate the effects only during forward thrust.
     setAfterburnersActive(thrust > 0);
 
-    // The retro thrusters fire only while reversing.
+    // The retro thrusters fire while reversing (and when braking: see
+    // setRetroBrake below).
     setRetroThrustersActive(thrust < 0);
+
+    const prevVX = player.velocity.x;
+    const prevVZ = player.velocity.z;
 
     // Shift boosts; the warp bubble doubles the ship's speed while it
     // is active (on top of any boost).
@@ -5697,6 +5765,9 @@ function updatePlayer(dt) {
             dt
         );
     }
+
+    // Braking jets, from how fast the ship is now slowing down.
+    setRetroBrake(prevVX, prevVZ, dt);
 
     // Update the player's position.
     player.position.x += player.velocity.x * dt;
