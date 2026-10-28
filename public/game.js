@@ -6839,6 +6839,7 @@ function onNetOffline() {
 
     updateRoundHUD();
     updateHUD();
+    renderAllTimeHud();
 
     $("message").textContent = multiplayer?.replaced
         ? "ONLINE IN ANOTHER TAB — SOLO HERE"
@@ -7489,6 +7490,10 @@ function onNetRound(round) {
 
     net.round = round;
 
+    // A live NEW RECORD ends with the round (it's official once the
+    // results arrive, or not at all).
+    renderAllTimeHud();
+
     if (round.phase === "ended") {
         if (state.running && player.mesh && !net.dead && !blackHole.active) {
             // The finale: the black hole opens and carries the ship
@@ -7628,6 +7633,7 @@ function hideRoundResults() {
 
 function updateOnlineGame(dt) {
     updateRoundHUD();
+    renderAllTimeHud();
 
     if (net.dead) {
         // Wreckage: nothing to fly until the respawn.
@@ -7686,6 +7692,13 @@ const records = {
     mine: loadMyRecordIds(),
 
     loading: false,
+
+    // True once the list has been heard from the server (so a live
+    // "new record" is only claimed against the real record).
+    loaded: false,
+
+    // What the ALL-TIME line last showed, to skip unchanged updates.
+    shown: "",
 
     // "New record" line for this round's results screen (or null).
     banner: null
@@ -7769,10 +7782,20 @@ function setAllTimeRecords(top) {
         .filter((r) => r && Number.isFinite(Number(r.score)))
         .slice(0, 10);
 
+    records.loaded = true;
+
     renderAllTimeRecords();
 }
 
-function onNetRecords(top) {
+// `sync`: a regular update (another lobby set a record, or this
+// lobby's 30-second check-in). Only the end-of-round list can announce
+// a record on the results screen.
+function onNetRecords(top, sync = false) {
+    if (sync) {
+        setAllTimeRecords(top);
+        return;
+    }
+
     const previousBest = records.top[0]?.score ?? 0;
 
     setAllTimeRecords(top);
@@ -7829,19 +7852,42 @@ function renderRecordsList(listId, count) {
     box.hidden = rows.length === 0;
 }
 
-function renderAllTimeRecords() {
-    const best = records.top[0];
+// The ALL-TIME line under the high score. During an online round, once
+// your score passes the record it shows your score, marked NEW RECORD;
+// it becomes official when the round ends or you leave. Called every
+// frame online, so it only touches the page when something changed.
+function renderAllTimeHud() {
     const line = $("all-time-best");
     const score = $("all-time-score");
 
-    if (line && score) {
-        line.hidden = !best;
+    if (!line || !score) return;
 
-        if (best) {
-            const text = Number(best.score).toLocaleString("en-US");
-            if (score.textContent !== text) score.textContent = text;
-        }
-    }
+    const official = Number(records.top[0]?.score ?? 0);
+
+    const live =
+        net.active &&
+        records.loaded &&
+        net.round?.phase === "playing" &&
+        !net.dead &&
+        state.score > 0 &&
+        state.score > official;
+
+    const value = live ? state.score : official;
+    const visible = live || records.top.length > 0;
+    const shown = `${visible}:${live}:${value}`;
+
+    if (shown === records.shown) return;
+
+    records.shown = shown;
+
+    line.hidden = !visible;
+    line.classList.toggle("live", live);
+
+    score.textContent = Number(value).toLocaleString("en-US");
+}
+
+function renderAllTimeRecords() {
+    renderAllTimeHud();
 
     renderRecordsList("records-start", 10);
     renderRecordsList("records-gameover", 10);

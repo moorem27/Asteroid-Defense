@@ -542,6 +542,11 @@ export class Matchmaker extends DurableObject {
 
         this.prune(now);
         await this.save();
+
+        // The all-time list rides back on the lobby's regular check-in,
+        // so every open game sees a new record within about 30 s, at no
+        // extra cost.
+        return { top: this.records.map(publicRecord), minimum: this.minimumScore() };
     }
 
     async stats() {
@@ -608,6 +613,11 @@ export class Lobby extends DurableObject {
         // from the Matchmaker. Players who leave below it aren't
         // reported, which saves a request.
         this.recordMinimum = 0;
+
+        // The all-time list as last sent to this lobby's players, and a
+        // fingerprint of it, so it's only re-sent when it changes.
+        this.lastRecords = null;
+        this.lastRecordsKey = "";
 
         this.resetWorld();
         this.round = null;
@@ -757,7 +767,11 @@ export class Lobby extends DurableObject {
             players,
             round: this.roundInfo(),
             you: this.youInfo(ship, true),
-            world: this.worldMessage(now)
+            world: this.worldMessage(now),
+
+            // The all-time list, if this lobby has heard it yet (fresher
+            // than the page's cached copy).
+            records: this.lastRecords
         });
 
         this.broadcast({ t: "join", p: { id, name, color } }, server);
@@ -1314,7 +1328,10 @@ export class Lobby extends DurableObject {
         // list follows the results a moment later.
         this.reportRecords([...this.ships.values()])
             .then((top) => {
-                if (top) this.broadcast({ t: "records", top });
+                if (!top) return;
+
+                this.noteRecords(top);
+                this.broadcast({ t: "records", top });
             })
             .catch(() => {});
     }
@@ -2333,7 +2350,27 @@ export class Lobby extends DurableObject {
             this.env.MATCHMAKER.idFromName(MATCHMAKER_NAME)
         );
 
-        await matchmaker.report(this.lobbyId, count);
+        const result = await matchmaker.report(this.lobbyId, count);
+
+        if (result && Array.isArray(result.top)) {
+            this.recordMinimum = Number(result.minimum) || 0;
+
+            if (this.noteRecords(result.top) && count > 0) {
+                this.broadcast({ t: "records", top: result.top, sync: true });
+            }
+        }
+    }
+
+    // Remember the latest all-time list. True if it changed.
+    noteRecords(top) {
+        const key = top.map((r) => `${r.at}:${r.score}:${r.name}`).join("|");
+
+        this.lastRecords = top.map(publicRecord);
+
+        if (key === this.lastRecordsKey) return false;
+
+        this.lastRecordsKey = key;
+        return true;
     }
 
     async ensureAlarm() {

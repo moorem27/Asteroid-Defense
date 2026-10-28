@@ -494,8 +494,11 @@ export class Multiplayer {
                 break;
 
             case "records":
-                // The all-time list, right after a round ends.
-                if (Array.isArray(data.top)) this.call("records", data.top);
+                // The all-time list: right after a round ends, or
+                // (sync) whenever it changes.
+                if (Array.isArray(data.top)) {
+                    this.call("records", data.top, Boolean(data.sync));
+                }
                 break;
 
             case "round":
@@ -588,6 +591,12 @@ export class Multiplayer {
         );
 
         this.call("online", data);
+
+        // The lobby's latest all-time list (fresher than the page's
+        // cached copy).
+        if (Array.isArray(data.records)) {
+            this.call("records", data.records, true);
+        }
     }
 
     onSnapshot(data) {
