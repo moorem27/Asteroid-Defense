@@ -47,10 +47,12 @@ const MAX_PLAYERS = 20;
 
 // ---- Timing -------------------------------------------------------
 
-// Simulation step (20 per second), ship snapshots every 2 steps
-// (10 per second), full world resync every second.
+// Simulation step (20 per second), ship snapshots every step (20 per
+// second: messages from the lobby to players don't count toward
+// Cloudflare's request limits, so this is cheap), full world resync
+// every second.
 const SIM_MS = 50;
-const SNAPSHOT_EVERY = 2;
+const SNAPSHOT_EVERY = 1;
 const WORLD_SYNC_EVERY = 20;
 
 const ROUND_MS = 15 * 60 * 1000;
@@ -67,8 +69,10 @@ const RESERVATION_MS = 15_000;
 const STALE_MS = 120_000;
 
 const MAX_MESSAGE_BYTES = 2048;
-const RATE_CAPACITY = 50;
-const RATE_PER_SECOND = 35;
+// Players report up to 20 times a second while maneuvering, plus shots
+// and keepalives; this leaves headroom above that.
+const RATE_CAPACITY = 60;
+const RATE_PER_SECOND = 45;
 
 const MATCHMAKER_NAME = "global";
 
@@ -2269,7 +2273,11 @@ export class Lobby extends DurableObject {
             if (now < s.warpUntil) flags |= 2;
             if (now < s.shieldUntil) flags |= 4;
 
-            players.push([s.id, s.x, s.z, s.r, s.vx, s.vz, s.th, flags, s.weapon]);
+            // Where the ship is now, not where it was when it last
+            // reported (reports arrive unevenly).
+            const p = s.alive ? this.shipPosition(s, now) : s;
+
+            players.push([s.id, round2(p.x), round2(p.z), s.r, s.vx, s.vz, s.th, flags, s.weapon]);
         }
 
         const rockets = this.rockets.map((r) => [

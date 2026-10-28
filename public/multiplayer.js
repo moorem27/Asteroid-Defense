@@ -31,15 +31,24 @@ const PROTOCOL_VERSION = 2;
 const CLOSE_REPLACED = 4001;
 
 const CONFIG = {
-    // Seconds between ship updates while flying (the server needs
-    // them for collisions), and while on a menu or game-over screen.
-    sendInterval: 0.1,
+    // Ship updates to the server while flying. Every cruiseSendInterval
+    // seconds at least; sooner (but no sooner than sendInterval) as soon
+    // as other players' prediction of this ship would be off by more
+    // than resendDistance units or resendHeading radians, or thrust
+    // starts or stops. So turning and braking reach other players
+    // straight away, while cruising straight costs few messages.
+    sendInterval: 0.05,
+    cruiseSendInterval: 0.1,
+    resendDistance: 0.12,
+    resendHeading: 0.04,
+
+    // On a menu or game-over screen.
     idleSendInterval: 1.0,
 
     joinTimeoutMs: 6000,
     keepaliveMs: 15000,
 
-    // The server sends ten updates a second; this long with nothing
+    // The server sends twenty updates a second; this long with nothing
     // means the connection is dead.
     silenceTimeoutMs: 10000,
 
@@ -47,9 +56,13 @@ const CONFIG = {
     retryBaseMs: 4000,
     retryMaxMs: 60000,
 
-    // Other ships are drawn this far in the past, so there are always
-    // two updates to move smoothly between.
-    renderDelayMs: 120,
+    // Other ships are drawn slightly in the past, so there are always
+    // two updates to move smoothly between. How far is measured from
+    // this connection: one update interval plus room for the variation
+    // in how long updates take to arrive, within these limits.
+    snapshotIntervalMs: 50,
+    minRenderDelayMs: 45,
+    maxRenderDelayMs: 160,
     maxExtrapolateMs: 250,
 
     hideAfterMs: 3000,
@@ -190,11 +203,7 @@ export class Multiplayer {
             this.lastLocal = local;
             this.sendClock += dt;
 
-            const interval = local?.playing
-                ? CONFIG.sendInterval
-                : CONFIG.idleSendInterval;
-
-            if (this.sendClock >= interval) {
+            if (this.shouldSendState(local)) {
                 this.sendClock = 0;
                 this.sendState();
             }
@@ -406,6 +415,37 @@ export class Multiplayer {
         }
     }
 
+    // Time to tell the server where this ship is?
+    shouldSendState(local) {
+        if (!local?.playing) return this.sendClock >= CONFIG.idleSendInterval;
+
+        if (this.sendClock >= CONFIG.cruiseSendInterval) return true;
+        if (this.sendClock < CONFIG.sendInterval) return false;
+
+        const last = this.lastSent;
+        if (!last || !last.playing) return true;
+
+        // Where other players will predict this ship to be, from the
+        // last update (they move it along its last velocity).
+        const px = last.x + last.vx * this.sendClock;
+        const pz = last.z + last.vz * this.sendClock;
+
+        const off = Math.hypot(num(local.x) - px, num(local.z) - pz);
+
+        const turned = Math.abs(Math.atan2(
+            Math.sin(num(local.r) - last.r),
+            Math.cos(num(local.r) - last.r)
+        ));
+
+        const thrust = local.thrust > 0 ? 1 : local.thrust < 0 ? -1 : 0;
+
+        return (
+            off > CONFIG.resendDistance ||
+            turned > CONFIG.resendHeading ||
+            thrust !== last.th
+        );
+    }
+
     sendState() {
         if (!this.isOnline()) return;
 
@@ -416,6 +456,16 @@ export class Multiplayer {
 
         if (hidden) st = STATUS_AWAY;
         else if (local?.playing) st = STATUS_PLAYING;
+
+        this.lastSent = {
+            playing: st === STATUS_PLAYING,
+            x: num(local?.x),
+            z: num(local?.z),
+            r: num(local?.r),
+            vx: num(local?.vx),
+            vz: num(local?.vz),
+            th: local?.thrust > 0 ? 1 : local?.thrust < 0 ? -1 : 0
+        };
 
         this.send({
             t: "s",
@@ -515,6 +565,47 @@ export class Multiplayer {
         }
     }
 
+    // When a snapshot was taken, on this browser's clock. Using the
+    // server's own timestamp (not when it happened to arrive) keeps
+    // other ships moving evenly when the network delivers unevenly.
+    // Also measures that unevenness, to size the smoothing buffer.
+    snapshotTime(serverTime) {
+        const arrived = now();
+
+        if (this.clockOffset === null || !Number.isFinite(serverTime)) {
+            return arrived;
+        }
+
+        let t = serverTime - this.clockOffset;
+
+        // Never after it arrived, and always after the previous one.
+        t = Math.min(t, arrived);
+        if (this.lastSnapshotT !== undefined && t <= this.lastSnapshotT) {
+            t = this.lastSnapshotT + 1;
+        }
+
+        this.lastSnapshotT = t;
+
+        // How much later than the quickest delivery this one arrived.
+        const late = arrived - t;
+
+        this.jitterMs = this.jitterMs === undefined
+            ? late
+            : this.jitterMs + (late - this.jitterMs) * (late > this.jitterMs ? 0.2 : 0.02);
+
+        return t;
+    }
+
+    // How far in the past other ships are drawn (ms).
+    renderDelay() {
+        const jitter = this.jitterMs ?? 30;
+
+        return Math.min(
+            CONFIG.maxRenderDelayMs,
+            Math.max(CONFIG.minRenderDelayMs, CONFIG.snapshotIntervalMs + 2 * jitter + 5)
+        );
+    }
+
     // The smallest delay seen is the best estimate of the offset.
     syncClock(serverTime) {
         const sample = serverTime - now();
@@ -600,7 +691,7 @@ export class Multiplayer {
     }
 
     onSnapshot(data) {
-        const t = now();
+        const t = this.snapshotTime(data.now);
 
         if (Array.isArray(data.p)) {
             for (const e of data.p) {
@@ -781,7 +872,7 @@ export class Multiplayer {
 
     updateRemotes() {
         const t = now();
-        const renderTime = t - CONFIG.renderDelayMs;
+        const renderTime = t - this.renderDelay();
 
         for (const remote of this.remotes.values()) {
             const samples = remote.samples;
@@ -936,7 +1027,7 @@ export class Multiplayer {
     // ---------------------------------------------------------
 
     updateRockets(dt) {
-        const renderTime = now() - CONFIG.renderDelayMs;
+        const renderTime = now() - this.renderDelay();
 
         for (const rocket of this.rockets.values()) {
             if (rocket.samples.length === 0) continue;
