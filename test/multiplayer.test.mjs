@@ -1523,26 +1523,35 @@ test("client: sends at once when turning or braking; fewer messages when cruisin
         realSend(data);
     };
 
-    // Cruising straight at a steady speed.
+    // Frames at exactly 60 fps, counted rather than timed, so the
+    // result doesn't depend on how busy the computer running the tests
+    // is.
+    const frames = async (n, local) => {
+        for (let i = 0; i < n; i++) {
+            a.update(1 / 60, local());
+            if (i % 10 === 9) await sleep(0);
+        }
+    };
+
+    // Cruising straight at a steady speed (one second).
     let x = 0;
-    await runFrames([[a, () => ({ playing: true, x: (x += 0.16), z: 0, r: 0, vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 })]], 1000);
+    await frames(60, () => ({ playing: true, x: (x += 10 / 60), z: 0, r: 0, vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 }));
     const cruising = sent;
 
-    // Turning hard the whole time.
+    // Turning hard the whole time (one second).
     sent = 0;
     let r = 0;
-    await runFrames([[a, () => ({ playing: true, x, z: 0, r: (r += 0.05), vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 })]], 1000);
+    await frames(60, () => ({ playing: true, x, z: 0, r: (r += 0.05), vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 }));
     const turning = sent;
 
     assert.ok(cruising >= 8 && cruising <= 12, `cruising: ${cruising}/s`);
     assert.ok(turning >= 16 && turning <= 21, `turning: ${turning}/s`);
 
     // Letting go of the throttle is sent at once (well before 100 ms).
+    await frames(8, () => ({ playing: true, x, z: 0, r, vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 }));
     sent = 0;
-    await runFrames([[a, () => ({ playing: true, x, z: 0, r, vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 })]], 120);
-    sent = 0;
-    await runFrames([[a, () => ({ playing: true, x, z: 0, r, vx: 10, vz: 0, thrust: 0, life: 1, weapon: 0 })]], 60);
-    assert.ok(sent >= 1, "thrust change sent within 60 ms");
+    await frames(4, () => ({ playing: true, x, z: 0, r, vx: 10, vz: 0, thrust: 0, life: 1, weapon: 0 }));
+    assert.ok(sent >= 1, "thrust change sent within 4 frames (67 ms)");
 
     shutdownAll();
 });

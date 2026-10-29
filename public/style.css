@@ -1,4 +1,18 @@
 :root {
+    /* ========================================================
+       TEXT SCALE
+       Every text size, and the spacing around text, is written as
+       a multiple of --u ("one HUD pixel"), so the whole interface
+       grows and shrinks together, keeping its proportions:
+         - phones (up to 600 px wide): about 1.4-1.5x the original
+         - laptops and 1080p screens: about 1.35-1.45x
+         - 1440p: about 1.8x;  4K: about 2.5x (the most)
+       It follows the screen's shorter side, so a big monitor gets
+       big text and a phone held sideways stays compact. (Media
+       queries further down set it for phones and short screens.)
+       ======================================================== */
+    --u: clamp(1.35px, calc(0.55px + 0.095vmin), 2.6px);
+
     --cyan: #42f5f2;
     --pink: #ff3f9f;
     --yellow: #ffe66d;
@@ -82,9 +96,9 @@ body {
 display: grid;
 grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 align-items: start;
-gap: 12px;
+gap: calc(12 * var(--u));
 
-padding: 18px 24px;
+padding: calc(18 * var(--u)) calc(24 * var(--u));
 pointer-events: none;
 
 
@@ -97,9 +111,9 @@ pointer-events: none;
 display: grid;
 grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 align-items: end;
-gap: 12px;
+gap: calc(12 * var(--u));
 
-padding: 18px 24px;
+padding: calc(18 * var(--u)) calc(24 * var(--u));
 pointer-events: none;
 
 
@@ -113,9 +127,12 @@ pointer-events: none;
 
 .hud-right { text-align: right; justify-self: end; }
 
-.hud-label { margin-bottom: 8px; color: var(--cyan); font-size: 9px; line-height: 1.6; }
+.hud-label { margin-bottom: calc(8 * var(--u)); color: var(--cyan); font-size: calc(9 * var(--u)); line-height: 1.6; }
 
-.hud-value, .lives-value { font-size: 13px; line-height: 1.6; }
+/* SYSTEM STATUS, the status message, warp and the clock sit closer together. */
+#bottom-hud .hud-center .hud-label { margin-bottom: calc(4 * var(--u)); }
+
+.hud-value, .lives-value { font-size: calc(13 * var(--u)); line-height: 1.6; }
 
 .lives-value { color: var(--pink); white-space: nowrap; }
 
@@ -128,9 +145,9 @@ pointer-events: none;
 
 .hull-bar {
     position: relative;
-    width: 120px;
-    height: 12px;
-    padding: 2px;
+    width: calc(120 * var(--u));
+    height: calc(12 * var(--u));
+    padding: calc(2 * var(--u));
     border: 1px solid currentColor;
     background: rgba(5, 7, 19, 0.65);
     box-shadow: 0 0 8px currentColor, inset 0 0 6px rgba(0, 0, 0, 0.6);
@@ -178,20 +195,20 @@ pointer-events: none;
 /* Destroyed: an empty, dim frame. */
 .hull-bar[data-hull="0"] { box-shadow: none; opacity: 0.7; }
 
-.game-logo { font-size: clamp(12px, 1.8vw, 20px); line-height: 1.6; white-space: nowrap; text-shadow: 0 0 12px var(--cyan); }
+.game-logo { font-size: clamp(calc(12 * var(--u)), 1.8vw, calc(20 * var(--u))); line-height: 1.6; white-space: nowrap; text-shadow: 0 0 12px var(--cyan); }
 
 .game-logo span { color: var(--pink); }
 
-.hud-subtitle { margin-top: 4px; color: var(--cyan); font-size: 8px; line-height: 1.6; letter-spacing: 0.5px; }
+.hud-subtitle { margin-top: calc(4 * var(--u)); color: var(--cyan); font-size: calc(8 * var(--u)); line-height: 1.6; letter-spacing: calc(0.5 * var(--u)); }
 
-#message { max-width: 300px; color: var(--yellow); font-size: 9px; line-height: 1.8; overflow-wrap: anywhere; text-shadow: 0 0 12px var(--yellow); }
+#message { max-width: calc(300 * var(--u)); color: var(--yellow); font-size: calc(9 * var(--u)); line-height: 1.5; overflow-wrap: anywhere; text-shadow: 0 0 12px var(--yellow); }
 
 /* Moved out of the max-width: 360px media query, where it only
    applied on the very smallest phones. */
-#warp-status { color: #65f5ff; font-family: monospace; font-size: 14px; font-weight: bold; text-shadow: 0 0 8px #00cfff; margin-top: 8px; }
+#warp-status { color: #65f5ff; font-family: monospace; font-size: calc(14 * var(--u)); font-weight: bold; text-shadow: 0 0 8px #00cfff; margin-top: calc(4 * var(--u)); }
 
 /* Match clock: time left in the 5-minute match. */
-#match-clock { margin-top: 8px; color: var(--cyan); font-size: 9px; line-height: 1.6; white-space: nowrap; text-shadow: 0 0 10px var(--cyan); }
+#match-clock { margin-top: calc(4 * var(--u)); color: var(--cyan); font-size: calc(9 * var(--u)); line-height: 1.6; white-space: nowrap; text-shadow: 0 0 10px var(--cyan); }
 
 #match-time { color: white; }
 
@@ -207,11 +224,11 @@ pointer-events: none;
    LOBBY LEADERBOARD (top right, online only)
    ============================================================ */
 
-.leaderboard { margin: 8px 0 0; padding: 0; list-style: none; font-size: 7px; line-height: 1.9; text-align: right; }
+.leaderboard { margin: calc(8 * var(--u)) 0 0; padding: 0; list-style: none; font-size: calc(8.5 * var(--u)); line-height: 1.8; text-align: right; }
 
 .leaderboard[hidden] { display: none; }
 
-.leaderboard li { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; opacity: 0.85; }
+.leaderboard li { display: flex; justify-content: flex-end; gap: calc(6 * var(--u)); white-space: nowrap; opacity: 0.95; }
 
 .leaderboard .lb-rank { color: var(--cyan); }
 
@@ -229,15 +246,15 @@ pointer-events: none;
    ============================================================ */
 
 .weapon-switch {
-    margin-top: 8px;
-    padding: 7px 10px;
-    min-height: 32px;
+    margin-top: calc(8 * var(--u));
+    padding: calc(7 * var(--u)) calc(10 * var(--u));
+    min-height: calc(32 * var(--u));
     border: 1px solid var(--cyan);
     background: rgba(7, 12, 35, 0.6);
     color: white;
     font-family: inherit;
-    font-size: 8px;
-    letter-spacing: 1px;
+    font-size: calc(8 * var(--u));
+    letter-spacing: calc(1 * var(--u));
     cursor: pointer;
 
     /* The HUD itself ignores the pointer; this button doesn't. */
@@ -247,7 +264,7 @@ pointer-events: none;
 
 .weapon-switch[hidden] { display: none; }
 
-.weapon-switch .weapon-cycle { margin-left: 6px; color: var(--cyan); }
+.weapon-switch .weapon-cycle { margin-left: calc(6 * var(--u)); color: var(--cyan); }
 
 .weapon-switch[data-weapon="laser"] { border-color: #ff4f6d; box-shadow: 0 0 8px rgba(255, 79, 109, 0.4); }
 
@@ -272,7 +289,9 @@ pointer-events: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 24px;
+    justify-content: safe center;
+    overflow-y: auto;
+    padding: calc(24 * var(--u));
     text-align: center;
     pointer-events: none;
 
@@ -280,15 +299,15 @@ pointer-events: none;
     background: radial-gradient(circle, rgba(3, 5, 20, 0.35) 0%, rgba(3, 5, 20, 0.8) 75%);
 }
 
-.results-title { color: #66ffff; font-size: clamp(24px, 6vw, 48px); letter-spacing: 0.1em; text-shadow: 0 0 10px #00ffff, 0 0 30px #00ffff; }
+.results-title { color: #66ffff; font-size: clamp(calc(24 * var(--u)), 6vw, calc(48 * var(--u))); letter-spacing: 0.1em; text-shadow: 0 0 10px #00ffff, 0 0 30px #00ffff; }
 
-.results-winner { margin-top: 18px; font-size: clamp(10px, 2.4vw, 16px); line-height: 1.6; }
+.results-winner { margin-top: calc(18 * var(--u)); font-size: clamp(calc(10 * var(--u)), 2.4vw, calc(16 * var(--u))); line-height: 1.6; }
 
 .results-you { color: var(--yellow); text-shadow: 0 0 12px var(--yellow); }
 
-.results-list { margin: 22px 0 0; padding: 0; list-style: none; font-size: clamp(8px, 1.8vw, 11px); line-height: 2.2; }
+.results-list { margin: calc(22 * var(--u)) 0 0; padding: 0; list-style: none; font-size: clamp(calc(8 * var(--u)), 1.8vw, calc(11 * var(--u))); line-height: 2.2; }
 
-.results-list li { display: grid; grid-template-columns: 3ch minmax(0, 16ch) 10ch 6ch; gap: 10px; text-align: left; }
+.results-list li { display: grid; grid-template-columns: 3ch minmax(0, 16ch) 10ch 6ch; gap: calc(10 * var(--u)); text-align: left; }
 
 .results-list .results-me { text-shadow: 0 0 10px rgba(255, 255, 255, 0.6); }
 
@@ -300,13 +319,13 @@ pointer-events: none;
 
 .results-kills { text-align: right; color: #8f93b8; }
 
-.results-next { margin-top: 22px; color: var(--cyan); font-size: 8px; }
+.results-next { margin-top: calc(22 * var(--u)); color: var(--cyan); font-size: calc(8 * var(--u)); }
 
 /* ============================================================
    ALL-TIME LEADERBOARD (from the server)
    ============================================================ */
 
-.all-time-best { margin-top: 4px; color: var(--yellow); font-size: 7px; line-height: 1.6; white-space: nowrap; opacity: 0.9; }
+.all-time-best { margin-top: calc(4 * var(--u)); color: var(--yellow); font-size: calc(8.5 * var(--u)); line-height: 1.6; white-space: nowrap; opacity: 1; }
 
 .all-time-best[hidden] { display: none; }
 
@@ -317,15 +336,15 @@ pointer-events: none;
 
 .all-time-best.live::after { content: " NEW RECORD!"; }
 
-.records { margin-top: 14px; width: min(320px, 100%); }
+.records { margin-top: calc(14 * var(--u)); width: min(calc(320 * var(--u)), 100%); }
 
 .records[hidden] { display: none; }
 
-.records-title { margin-bottom: 6px; color: var(--yellow); font-size: 8px; letter-spacing: 1px; }
+.records-title { margin-bottom: calc(6 * var(--u)); color: var(--yellow); font-size: calc(8 * var(--u)); letter-spacing: calc(1 * var(--u)); }
 
-.records-list { margin: 0; padding: 0; list-style: none; font-size: 8px; line-height: 2; }
+.records-list { margin: 0; padding: 0; list-style: none; font-size: calc(8 * var(--u)); line-height: 2; }
 
-.records-list li { display: grid; grid-template-columns: 3ch minmax(0, 1fr) auto; gap: 8px; text-align: left; }
+.records-list li { display: grid; grid-template-columns: 3ch minmax(0, 1fr) auto; gap: calc(8 * var(--u)); text-align: left; }
 
 .records-list .rec-rank { color: var(--cyan); }
 
@@ -337,9 +356,9 @@ pointer-events: none;
 
 .records-list .rec-you .rec-score { color: var(--yellow); }
 
-#round-results .records { margin-top: 18px; }
+#round-results .records { margin-top: calc(18 * var(--u)); }
 
-.results-record { margin-top: 14px; color: var(--yellow); font-size: clamp(9px, 2vw, 13px); text-shadow: 0 0 12px var(--yellow); animation: match-clock-pulse 0.8s ease-in-out infinite alternate; }
+.results-record { margin-top: calc(14 * var(--u)); color: var(--yellow); font-size: clamp(calc(9 * var(--u)), 2vw, calc(13 * var(--u))); text-shadow: 0 0 12px var(--yellow); animation: match-clock-pulse 0.8s ease-in-out infinite alternate; }
 
 .results-record[hidden] { display: none; }
 
@@ -348,14 +367,14 @@ pointer-events: none;
    ============================================================ */
 
 .callsign {
-    margin-top: 6px;
-    padding: 4px 8px;
+    margin-top: calc(6 * var(--u));
+    padding: calc(4 * var(--u)) calc(8 * var(--u));
     border: 1px solid rgba(66, 245, 242, 0.45);
     background: rgba(7, 12, 35, 0.55);
     color: white;
     font-family: inherit;
-    font-size: 7px;
-    letter-spacing: 1px;
+    font-size: calc(7 * var(--u));
+    letter-spacing: calc(1 * var(--u));
     cursor: pointer;
 
     /* The HUD itself ignores the pointer; this button doesn't. */
@@ -365,7 +384,7 @@ pointer-events: none;
 
 .callsign[hidden] { display: none; }
 
-.callsign .callsign-edit { margin-left: 4px; color: var(--cyan); }
+.callsign .callsign-edit { margin-left: calc(4 * var(--u)); color: var(--cyan); }
 
 .callsign-dialog {
     position: fixed;
@@ -374,31 +393,31 @@ pointer-events: none;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 16px;
+    padding: calc(16 * var(--u));
     background: rgba(2, 3, 15, 0.75);
 }
 
 .callsign-box {
-    width: min(340px, 100%);
-    padding: 20px;
+    width: min(calc(340 * var(--u)), 100%);
+    padding: calc(20 * var(--u));
     border: 2px solid var(--cyan);
     background: var(--panel);
     text-align: center;
 }
 
-.callsign-title { display: block; margin-bottom: 14px; color: var(--cyan); font-size: 10px; }
+.callsign-title { display: block; margin-bottom: calc(14 * var(--u)); color: var(--cyan); font-size: calc(10 * var(--u)); }
 
 .callsign-input {
     width: 100%;
-    padding: 12px;
+    padding: calc(12 * var(--u));
     border: 1px solid var(--pink);
     background: rgba(255, 63, 159, 0.08);
     color: white;
     font-family: inherit;
-    font-size: 14px;
+    font-size: calc(14 * var(--u));
     text-align: center;
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: calc(1 * var(--u));
     outline: none;
 
     /* Typing and selecting must work here, unlike the rest of the page. */
@@ -409,18 +428,18 @@ pointer-events: none;
 
 .callsign-input:focus { box-shadow: 0 0 10px rgba(255, 63, 159, 0.6); }
 
-.callsign-error { min-height: 2.4em; margin-top: 10px; color: var(--yellow); font-size: 8px; line-height: 1.6; }
+.callsign-error { min-height: 2.4em; margin-top: calc(10 * var(--u)); color: var(--yellow); font-size: calc(8 * var(--u)); line-height: 1.6; }
 
-.callsign-buttons { display: flex; gap: 10px; margin-top: 6px; }
+.callsign-buttons { display: flex; gap: calc(10 * var(--u)); margin-top: calc(6 * var(--u)); }
 
 .callsign-button {
     flex: 1;
-    padding: 12px 8px;
+    padding: calc(12 * var(--u)) calc(8 * var(--u));
     border: 1px solid var(--cyan);
     background: transparent;
     color: white;
     font-family: inherit;
-    font-size: 9px;
+    font-size: calc(9 * var(--u));
     cursor: pointer;
     touch-action: manipulation;
 }
@@ -428,7 +447,7 @@ pointer-events: none;
 .callsign-button.primary { border-color: var(--pink); background: rgba(255, 63, 159, 0.15); }
 
 /* Multiplayer connection status, under the logo. */
-#net-status { margin-top: 6px; font-size: 7px; line-height: 1.6; letter-spacing: 0.5px; white-space: nowrap; color: var(--cyan); opacity: 0.9; }
+#net-status { margin-top: calc(6 * var(--u)); font-size: calc(7 * var(--u)); line-height: 1.6; letter-spacing: calc(0.5 * var(--u)); white-space: nowrap; color: var(--cyan); opacity: 0.9; }
 
 #net-status[data-state="online"] { color: #7dff6b; text-shadow: 0 0 8px rgba(125, 255, 107, 0.6); }
 
@@ -436,7 +455,7 @@ pointer-events: none;
 
 #net-status[data-state="offline"] { color: #8f93b8; }
 
-.mission-goal { margin: 4px 0 0; color: var(--cyan); font-size: 8px; line-height: 2; overflow-wrap: anywhere; }
+.mission-goal { margin: calc(4 * var(--u)) 0 0; color: var(--cyan); font-size: calc(8 * var(--u)); line-height: 2; overflow-wrap: anywhere; }
 
 /* ============================================================ GAME SCREENS ============================================================ */
 
@@ -449,8 +468,13 @@ flex-direction: column;
 align-items: center;
 justify-content: center;
 
+/* Centered when it fits; when it's taller than the screen (a phone
+   held sideways), it starts at the top and scrolls, instead of the
+   top being cut off out of reach. */
+justify-content: safe center;
+
 overflow-y: auto;
-padding: 24px;
+padding: calc(24 * var(--u));
 
 text-align: center;
 background: rgba(2, 3, 15, 0.92);
@@ -460,39 +484,39 @@ background: rgba(2, 3, 15, 0.92);
 
 #start-screen.hidden, #game-over.hidden { display: none !important; }
 
-#start-screen h1, #game-over h2 { margin: 16px 0; line-height: 1.5; }
+#start-screen h1, #game-over h2 { margin: calc(16 * var(--u)) 0; line-height: 1.5; }
 
-#start-screen h1 { font-size: clamp(30px, 7vw, 56px); letter-spacing: -2px; text-shadow: 4px 4px 0 #4031a3; }
+#start-screen h1 { font-size: clamp(calc(30 * var(--u)), 7vw, calc(56 * var(--u))); letter-spacing: calc(-2 * var(--u)); text-shadow: 4px 4px 0 #4031a3; }
 
 #start-screen h1 span, #game-over h2 span { color: var(--pink); }
 
-.title-description { max-width: 100%; font-size: 9px; line-height: 2; overflow-wrap: anywhere; }
+.title-description { max-width: 100%; font-size: calc(9 * var(--u)); line-height: 2; overflow-wrap: anywhere; }
 
-.arcade-button { width: min(320px, 100%); margin: 16px 0; padding: 16px; border: 2px solid var(--pink); background: rgba(255, 63, 159, 0.09); color: white; font-family: inherit; font-size: 10px; cursor: pointer; }
+.arcade-button { width: min(calc(320 * var(--u)), 100%); margin: calc(16 * var(--u)) 0; padding: calc(16 * var(--u)); border: 2px solid var(--pink); background: rgba(255, 63, 159, 0.09); color: white; font-family: inherit; font-size: calc(10 * var(--u)); cursor: pointer; }
 
 .arcade-button:hover { background: var(--pink); color: #080716; }
 
-.controls { margin-top: 20px; font-size: 8px; line-height: 2.2; }
+.controls { margin-top: calc(20 * var(--u)); font-size: calc(8 * var(--u)); line-height: 2.2; }
 
-.controls-heading { margin-bottom: 10px; color: var(--cyan); }
+.controls-heading { margin-bottom: calc(10 * var(--u)); color: var(--cyan); }
 
-.control-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; }
+.control-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: calc(6 * var(--u)); }
 
-.control-description { margin-left: 6px; }
+.control-description { margin-left: calc(6 * var(--u)); }
 
 .keycap { color: var(--yellow); }
 
-.panel-topline, .panel-bottomline { max-width: 100%; color: var(--cyan); font-size: 7px; line-height: 2; overflow-wrap: anywhere; }
+.panel-topline, .panel-bottomline { max-width: 100%; color: var(--cyan); font-size: calc(7 * var(--u)); line-height: 2; overflow-wrap: anywhere; }
 
-.panel-bottomline { margin-top: 20px; }
+.panel-bottomline { margin-top: calc(20 * var(--u)); }
 
-.insert-coin { margin: 12px 0; color: var(--yellow); font-size: 9px; }
+.insert-coin { margin: calc(12 * var(--u)) 0; color: var(--yellow); font-size: calc(9 * var(--u)); }
 
-.final-score { margin: 18px 0; color: var(--yellow); font-size: clamp(22px, 5vw, 34px); }
+.final-score { margin: calc(18 * var(--u)) 0; color: var(--yellow); font-size: clamp(calc(22 * var(--u)), 5vw, calc(34 * var(--u))); }
 
-.final-score-label { margin-top: 20px; color: var(--cyan); font-size: 9px; }
+.final-score-label { margin-top: calc(20 * var(--u)); color: var(--cyan); font-size: calc(9 * var(--u)); }
 
-.game-over-icon { margin: 12px 0; color: var(--cyan); font-size: 36px; }
+.game-over-icon { margin: calc(12 * var(--u)) 0; color: var(--cyan); font-size: calc(36 * var(--u)); }
 
 /* ============================================================ DAMAGE FLASH ============================================================ */
 
@@ -500,11 +524,15 @@ background: rgba(2, 3, 15, 0.92);
 
 /* ============================================================ MOBILE HUD ============================================================ */
 
-@media (max-width: 600px) { #hud { padding: 12px 8px; gap: 4px; }
+/* Phones, upright or held sideways (short screens): the compact
+   layout, its text scaled by the screen's shorter side. */
+@media (max-width: 600px), (max-height: 500px) { :root { --u: clamp(1.4px, calc(0.45px + 0.25vmin), 1.7px); }
+
+#hud { padding: calc(12 * var(--u)) calc(8 * var(--u)); gap: calc(4 * var(--u)); }
 
 #bottom-hud {
-    padding: 12px 8px;
-    gap: 4px;
+    padding: calc(12 * var(--u)) calc(8 * var(--u));
+    gap: calc(4 * var(--u));
 }
 
 #hud .hud-center,
@@ -522,91 +550,108 @@ background: rgba(2, 3, 15, 0.92);
 }
 
 .game-logo {
-    font-size: clamp(9px, 3vw, 13px);
+    font-size: clamp(calc(9 * var(--u)), 3vw, calc(13 * var(--u)));
     letter-spacing: 0;
 }
 
 .hud-subtitle {
     max-width: 40vw;
-    margin: 3px auto 0;
-    font-size: 6px;
+    margin: calc(3 * var(--u)) auto 0;
+    font-size: calc(6 * var(--u));
     line-height: 1.6;
     letter-spacing: 0;
     overflow-wrap: anywhere;
 }
 
 .hud-label {
-    margin-bottom: 4px;
-    font-size: 7px;
+    margin-bottom: calc(4 * var(--u));
+    font-size: calc(7 * var(--u));
     line-height: 1.5;
 }
 
 .hud-value,
 .lives-value {
-    font-size: 10px;
+    font-size: calc(10 * var(--u));
 }
 
 .hull-bar {
-    width: 84px;
-    height: 10px;
+    width: calc(72 * var(--u));
+    height: calc(10 * var(--u));
 }
 
 #message {
     max-width: 40vw;
-    font-size: 6px;
-    line-height: 1.6;
+    font-size: calc(7 * var(--u));
+    line-height: 1.4;
     overflow-wrap: anywhere;
 }
 
 #match-clock {
-    font-size: 6px;
-    margin-top: 4px;
+    font-size: calc(7 * var(--u));
+    margin-top: calc(4 * var(--u));
 }
 
 #net-status {
-    font-size: 5px;
-    margin-top: 3px;
+    font-size: calc(6 * var(--u));
+    margin-top: calc(3 * var(--u));
 }
 
 .callsign {
-    font-size: 6px;
-    padding: 5px 7px;
+    font-size: calc(6 * var(--u));
+    padding: calc(5 * var(--u)) calc(7 * var(--u));
 }
 
 .all-time-best {
-    font-size: 6px;
+    font-size: calc(7.5 * var(--u));
 }
 
 .records-list {
-    font-size: 7px;
+    font-size: calc(7 * var(--u));
 }
 
 .leaderboard {
-    font-size: 6px;
-    line-height: 1.8;
+    font-size: calc(7.5 * var(--u));
+    line-height: 1.7;
 }
 
 .leaderboard .lb-name {
     max-width: 9ch;
 }
 
+/* Upright phones: the top right is narrow, so the all-time score
+   takes two lines (label, then score), and the lobby's top 5 sits
+   just below the top HUD on the right, where it has room, instead of
+   squeezing into the column beside the title. */
+@media (max-width: 600px) {
+    .all-time-best span {
+        display: block;
+    }
+
+    #hud .leaderboard {
+        position: absolute;
+        top: 100%;
+        right: calc(8 * var(--u));
+        margin-top: 0;
+    }
+}
+
 .weapon-switch {
-    font-size: 7px;
-    padding: 8px 9px;
-    min-height: 34px;
+    font-size: calc(7 * var(--u));
+    padding: calc(8 * var(--u)) calc(9 * var(--u));
+    min-height: calc(34 * var(--u));
 }
 
 #start-screen,
 #game-over {
-    padding: 16px;
+    padding: calc(16 * var(--u));
 }
 
 .controls {
-    font-size: 7px;
+    font-size: calc(7 * var(--u));
 }
 
 .title-description {
-    font-size: 8px;
+    font-size: calc(8 * var(--u));
 }
 
 
@@ -614,32 +659,80 @@ background: rgba(2, 3, 15, 0.92);
 
 /* ============================================================ EXTRA-SMALL PHONES ============================================================ */
 
-@media (max-width: 360px) { #hud, #bottom-hud { padding-left: 5px; padding-right: 5px; gap: 3px; }
+@media (max-width: 360px) { #hud, #bottom-hud { padding-left: calc(5 * var(--u)); padding-right: calc(5 * var(--u)); gap: calc(3 * var(--u)); }
+
+#hud .leaderboard {
+    right: calc(5 * var(--u));
+}
 
 .game-logo {
-    font-size: 9px;
+    font-size: calc(9 * var(--u));
 }
 
 .hud-subtitle {
-    font-size: 5px;
+    font-size: calc(5.5 * var(--u));
 }
 
 .hud-label {
-    font-size: 6px;
+    font-size: calc(6 * var(--u));
 }
 
 .hud-value,
 .lives-value {
-    font-size: 9px;
+    font-size: calc(9 * var(--u));
 }
 
 .hull-bar {
-    width: 64px;
-    height: 9px;
+    width: calc(64 * var(--u));
+    height: calc(9 * var(--u));
 }
 
 #message {
-    font-size: 5px;
+    font-size: calc(6 * var(--u));
 }
 
+}
+
+/* ============================================================ SHORT SCREENS (phones held sideways) ============================================================ */
+
+/* Little height to spare: the start and game-over screens tighten up
+   so the INSERT COIN / PLAY AGAIN button is on screen without
+   scrolling. (The rest scrolls.) */
+@media (max-height: 500px) {
+    /* Height is the tight dimension here: a little less growth. */
+    :root { --u: clamp(1.3px, calc(0.4px + 0.24vmin), 1.4px); }
+
+    #start-screen h1,
+    #game-over h2 {
+        margin: calc(6 * var(--u)) 0;
+    }
+
+    #start-screen h1 {
+        font-size: min(clamp(calc(30 * var(--u)), 7vw, calc(56 * var(--u))), 12vh);
+    }
+
+    /* The decorative stars in a row instead of a column. */
+    .title-art {
+        display: flex;
+        justify-content: center;
+        gap: calc(14 * var(--u));
+    }
+
+    .insert-coin,
+    .game-over-icon {
+        margin: calc(6 * var(--u)) 0;
+    }
+
+    .final-score-label {
+        margin-top: calc(8 * var(--u));
+    }
+
+    .final-score {
+        margin: calc(8 * var(--u)) 0;
+    }
+
+    .arcade-button {
+        margin: calc(10 * var(--u)) 0;
+        padding: calc(12 * var(--u));
+    }
 }
