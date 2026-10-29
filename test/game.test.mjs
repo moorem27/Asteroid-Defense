@@ -18,7 +18,7 @@ const games = [];
 
 // Load a fresh copy of game.js (and multiplayer.js) wired to the
 // stand-ins and to `server`.
-async function loadGame(server) {
+async function loadGame(server, { start = true } = {}) {
     const dom = installDom(path.join(publicDir, "index.html"));
 
     globalThis.WebSocket = makeBrowserWebSocket(server);
@@ -66,6 +66,13 @@ export const __test = {
 
     const game = { t: mod.__test, dom, server };
     games.push(game);
+
+    // The title screen waits for INSERT COIN; press it once the
+    // models have loaded (unless the test wants the title screen).
+    if (start) {
+        await waitFor(() => !game.t.state.loading, 3000, "models loaded");
+        dom.el("start-button").dispatch("click");
+    }
 
     return game;
 }
@@ -145,6 +152,93 @@ test("offline: the solo game boots and plays when the server is unreachable", as
     assert.ok(t.asteroids.every((a) => a.netId === undefined));
     assert.equal(dom.el("leaderboard").hidden, true);
     assert.notEqual(dom.el("sector-label").textContent, "ROUND");
+
+    stopGames();
+});
+
+test("title screen: waits for INSERT COIN; online, the lobby is joined quietly until then", async () => {
+    const server = await loadWorker();
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => !t.state.loading, 3000, "models loaded");
+    await waitFor(() => t.multiplayer?.isOnline(), 3000, "lobby joined");
+    await play(game, 1500);
+
+    assert.ok(!dom.el("start-screen").classList.contains("hidden"), "title screen still showing");
+    assert.ok(!t.state.running, "not playing yet");
+    assert.ok(!t.net.active, "not in the shared world yet");
+    assert.equal(t.getNetworkState().playing, false, "other pilots don't see this ship yet");
+
+    dom.el("start-button").dispatch("click");
+    await play(game, 100);
+
+    assert.ok(dom.el("start-screen").classList.contains("hidden"), "title screen gone");
+    assert.ok(t.state.running && t.net.active, "in the shared world");
+
+    stopGames();
+});
+
+test("title screen: rounds that end and start while waiting are joined correctly", async () => {
+    const server = await loadWorker();
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => t.multiplayer?.isOnline(), 3000, "lobby joined");
+    const lobby = quietLobby(server);
+
+    // Round 1 ends while this player is still on the title screen.
+    lobby.round.endsAt = Date.now();
+    await play(game, 400);
+
+    // Pressing INSERT COIN during the break shows the results and
+    // waits for the next round (no black hole for a ship not in play).
+    dom.el("start-button").dispatch("click");
+    await play(game, 200);
+
+    assert.ok(dom.el("start-screen").classList.contains("hidden"), "title screen gone");
+    assert.ok(!dom.el("round-results").classList.contains("hidden"), "results showing");
+    assert.equal(t.state.running, false, "waiting for the next round");
+    assert.equal(t.blackHole.active, false);
+
+    // The next round starts by itself.
+    lobby.round.nextAt = Date.now();
+    await waitFor(async () => {
+        await play(game, 50);
+        return t.state.running && t.net.round?.n === 2;
+    }, 2000, "round 2");
+
+    assert.ok(dom.el("round-results").classList.contains("hidden"));
+    // (It may be blinking: new rounds start with the spawn shield.)
+    assert.ok(t.player.mesh && !t.net.dead, "ship in play");
+    assert.equal(t.getNetworkState().playing, true, "other pilots see it");
+
+    stopGames();
+});
+
+test("title screen: a player who waits through a whole round change starts in the new round", async () => {
+    const server = await loadWorker();
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => t.multiplayer?.isOnline(), 3000, "lobby joined");
+    const lobby = quietLobby(server);
+
+    lobby.round.endsAt = Date.now();
+    await play(game, 300);
+    lobby.round.nextAt = Date.now();
+    await play(game, 400);
+
+    assert.equal(lobby.round.n, 2);
+    assert.ok(!dom.el("start-screen").classList.contains("hidden"), "still on the title screen");
+
+    dom.el("start-button").dispatch("click");
+    await play(game, 200);
+
+    assert.ok(t.state.running && t.net.active, "playing");
+    assert.equal(t.net.round?.n, 2, "in round 2");
+    assert.equal(dom.el("sector").textContent, "02");
+    assert.ok(dom.el("round-results").classList.contains("hidden"));
 
     stopGames();
 });

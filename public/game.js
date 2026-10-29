@@ -992,7 +992,7 @@ window.addEventListener("keydown", (event) => {
         !state.running &&
         !state.loading
     ) {
-        startGame();
+        launchGame();
     }
 });
 
@@ -1175,6 +1175,9 @@ window.addEventListener("blur", () => {
 
 const state = {
     loading: true,
+
+    // True once the player has pressed INSERT COIN (see launchGame).
+    launched: false,
     running: false,
     gameOver: false,
 
@@ -8190,8 +8193,24 @@ function endGame() {
     }
 }
 
-$("start-button").addEventListener("click", startGame);
-$("restart-button").addEventListener("click", startGame);
+$("start-button").addEventListener("click", launchGame);
+$("restart-button").addEventListener("click", launchGame);
+
+// The title screen stays up until the player presses INSERT COIN (or
+// Enter). Until then the game only loads and, online, joins a lobby
+// quietly in the background; the ship enters the world on the press.
+function launchGame() {
+    if (state.loading) return;
+
+    state.launched = true;
+
+    if (net.pendingWelcome) {
+        // Already in a lobby: go straight into the shared world.
+        enterOnlineWorld(net.pendingWelcome);
+    } else {
+        startGame();
+    }
+}
 
 // ------------------------------------------------------------
 // GAME UPDATE
@@ -8489,8 +8508,9 @@ function getNetworkState() {
 // ------------------------------------------------------------
 
 function onNetOnline(welcome) {
-    // Models still loading: boot() applies this when they're ready.
-    if (state.loading) {
+    // Models still loading, or still on the title screen: kept until
+    // the player presses INSERT COIN (see launchGame).
+    if (state.loading || !state.launched) {
         net.pendingWelcome = welcome;
         return;
     }
@@ -9775,12 +9795,8 @@ async function boot() {
         $("message").textContent = "READY FOR LAUNCH";
 
         console.info(`ASTEROID DEFENSE ready (build ${GAME_BUILD}).`);
-        startGame();
 
-        // Joined a lobby while the models were loading.
-        if (net.pendingWelcome) {
-            enterOnlineWorld(net.pendingWelcome);
-        }
+        // The title screen now waits for INSERT COIN (launchGame).
     } catch (error) {
         console.error(error);
 

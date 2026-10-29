@@ -547,7 +547,9 @@ test("UFO: its shield absorbs bullets, stops lasers and rockets, and turns aster
     const rock = lobby.spawnAsteroid(s.x + 6, s.z, 0.72, -8, 0);
 
     await waitFor(() => rock.vx > 0, 1500, "bounced");
-    assert.ok(a.eventsOf("au").some((e) => e[1] === rock.id), "everyone told");
+
+    // The update reaches players with the next broadcast.
+    await waitFor(() => a.eventsOf("au").some((e) => e[1] === rock.id), 1000, "everyone told");
 
     const now = ufoState(lobby.ufo, Date.now());
     assert.ok(Math.hypot(rock.x - now.x, rock.z - now.z) >= UFO.shieldRadius, "outside the shield");
