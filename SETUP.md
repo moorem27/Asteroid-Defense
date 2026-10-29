@@ -68,6 +68,18 @@ can award themselves points.
 - **Laser.** The beam reaches 60 units, a little past the edges of the screen,
   and hits exactly what is drawn, including anything that moves into it while
   it's visible.
+- **UFO visits.** Once or twice a round (once or twice per solo game, too) a
+  flying saucer appears near a random pilot, watches for 9–14 seconds,
+  following them if they fly off, and then leaves at an impossible speed:
+  - everyone in the lobby sees the same saucer, because the server decides when
+    and where it appears and what hits it (`public/ufo.js` holds the flight
+    plan both sides use)
+  - nothing hurts it and it hurts nobody: its shield absorbs bullets, stops the
+    laser, sets rockets off and turns asteroids aside, and there are no points
+    for shooting it
+  - the model is `public/assets/ufo.glb`, made by `blender/generate_ufo.py`
+    (run it with Blender, or with plain `python3`). If the file is missing, the
+    game draws a simpler stand-in saucer.
 
 ### One pilot per browser
 

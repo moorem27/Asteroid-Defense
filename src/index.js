@@ -40,6 +40,10 @@ import { DurableObject } from "cloudflare:workers";
 // Callsign rules, shared with the game (public/name-filter.js).
 import { checkName, randomCallsign } from "../public/name-filter.js";
 
+// UFO visits, shared with the game (public/ufo.js): the flight plan
+// and its timing are worked out the same way on both sides.
+import { UFO, createUfoPlan, ufoState, ufoFollow, ufoLeave } from "../public/ufo.js";
+
 // Must match PROTOCOL_VERSION in public/multiplayer.js.
 const PROTOCOL_VERSION = 2;
 
@@ -197,6 +201,20 @@ const CRYSTALS = {
     dropChance: 0.11,
     spawnDelay: [15, 25],
     spawnDistance: [9, 13]
+};
+
+// A flying saucer visits a random pilot once or twice a round (see
+// UFO VISITS). Times are from the start of the round, in ms.
+const UFO_VISITS = {
+    first: [2 * 60_000, 6 * 60_000],
+    second: [8 * 60_000, 12 * 60_000],
+    secondChance: 0.65,
+
+    // No pilot around to visit: try again this much later.
+    retryMs: 20_000,
+
+    // Not in the last minute of a round.
+    notAfterMs: ROUND_MS - 60_000
 };
 
 const ROGUE = {
@@ -1152,9 +1170,22 @@ export class Lobby extends DurableObject {
                 oz: z,
                 dx,
                 dz,
+                range: LASER.range,
                 life: LASER.life,
                 hit: new Set()
             };
+
+            // A UFO's shield stops the beam: nothing past it is hit.
+            const ufo = this.ufoShield(now);
+
+            if (ufo) {
+                const along = segmentHit(x, z, dx, dz, LASER.range, ufo.x, ufo.z, UFO.shieldRadius);
+
+                if (along >= 0) {
+                    beam.range = along;
+                    this.event(["uh", round2(x + dx * along), round2(z + dz * along), ship.id, 1]);
+                }
+            }
 
             this.beams.push(beam);
 
@@ -1257,6 +1288,8 @@ export class Lobby extends DurableObject {
         }
 
         this.moveAsteroids(dt);
+        this.updateUfo(now);
+        this.deflectFromUfo(now);
         this.updateMines(dt);
         this.updateCrystals(dt);
         this.updateBullets(dt, now);
@@ -1270,6 +1303,133 @@ export class Lobby extends DurableObject {
             this.spawnThings(now);
             this.despawnFarAsteroids();
         }
+    }
+
+    // ---------------------------------------------------------
+    // UFO VISITS
+    // Once or twice a round a flying saucer appears near a random
+    // pilot, watches for a while (gliding after them if they fly off)
+    // and then leaves at an impossible speed. Its shield absorbs every
+    // shot and turns asteroids aside; nothing can hurt it, and it hurts
+    // nobody. Everything about a visit follows from its plan
+    // (public/ufo.js), which is sent to every player ("us" events, and
+    // "u" in the world message), so everyone sees the same saucer.
+    // ---------------------------------------------------------
+
+    scheduleUfo(now) {
+        this.ufo = null;
+        this.ufoDue = [now + randomRange(...UFO_VISITS.first)];
+
+        if (Math.random() < UFO_VISITS.secondChance) {
+            this.ufoDue.push(now + randomRange(...UFO_VISITS.second));
+        }
+    }
+
+    updateUfo(now) {
+        if (this.ufo) {
+            const state = ufoState(this.ufo, now);
+
+            if (state.phase === "gone") {
+                // Players finish drawing the departure themselves.
+                this.ufo = null;
+                return;
+            }
+
+            // Keep watching the pilot it came to see.
+            const watched = this.findShip(this.ufo.w);
+
+            if (watched && watched.alive && this.isPresent(watched, now)) {
+                const p = this.shipPosition(watched, now);
+
+                if (ufoFollow(this.ufo, Math.random, p.x, p.z, now, HALF_W, HALF_H)) {
+                    this.event(["us", this.ufo]);
+                }
+            }
+
+            return;
+        }
+
+        if (this.ufoDue.length === 0 || now < this.ufoDue[0]) return;
+
+        const roundTime = now - (this.round?.startedAt ?? now);
+
+        if (roundTime > UFO_VISITS.notAfterMs) {
+            this.ufoDue = [];
+            return;
+        }
+
+        const ship = this.randomPresentShip();
+
+        if (!ship) {
+            this.ufoDue[0] = now + UFO_VISITS.retryMs;
+            return;
+        }
+
+        this.ufoDue.shift();
+
+        const p = this.shipPosition(ship, now);
+
+        this.ufo = createUfoPlan(Math.random, {
+            id: ++this.ufoCount,
+            startMs: now,
+            x: p.x,
+            z: p.z,
+            halfW: HALF_W,
+            halfH: HALF_H,
+            watch: ship.id
+        });
+
+        this.event(["us", this.ufo]);
+    }
+
+    // The UFO's position while its shield is up (stopping shots), or
+    // null.
+    ufoShield(now) {
+        if (!this.ufo) return null;
+
+        const state = ufoState(this.ufo, now);
+
+        return state.solid ? state : null;
+    }
+
+    // Asteroids glance off the shield (players see the "au" update).
+    deflectFromUfo(now) {
+        const ufo = this.ufoShield(now);
+        if (!ufo) return;
+
+        for (const a of this.asteroids) {
+            const dx = a.x - ufo.x;
+            const dz = a.z - ufo.z;
+            const reach = UFO.shieldRadius + a.radius;
+            const d = Math.hypot(dx, dz);
+
+            if (d >= reach || d < 1e-6) continue;
+
+            const nx = dx / d;
+            const nz = dz / d;
+
+            a.x = ufo.x + nx * reach;
+            a.z = ufo.z + nz * reach;
+
+            const toward = a.vx * nx + a.vz * nz;
+
+            if (toward < 0) {
+                a.vx -= 2 * toward * nx;
+                a.vz -= 2 * toward * nz;
+            }
+
+            this.event(["au", a.id, round2(a.x), round2(a.z), round2(a.vx), round2(a.vz)]);
+        }
+    }
+
+    findShip(id) {
+        if (id === null || id === undefined) return null;
+
+        for (const s of this.ships.values()) {
+            if (s.id === id) return s;
+        }
+
+        return null;
     }
 
     // ---------------------------------------------------------
@@ -1288,6 +1448,8 @@ export class Lobby extends DurableObject {
             nextAt: 0,
             results: null
         };
+
+        this.scheduleUfo(now);
 
         for (const ship of this.ships.values()) {
             ship.score = 0;
@@ -1320,6 +1482,13 @@ export class Lobby extends DurableObject {
         this.round.phase = "ended";
         this.round.nextAt = now + INTERMISSION_MS;
         this.round.results = results;
+
+        // A visiting UFO leaves as the round ends (the black hole).
+        this.ufoDue = [];
+
+        if (this.ufo && ufoLeave(this.ufo, now)) {
+            this.event(["us", this.ufo]);
+        }
 
         this.bullets = [];
         this.beams = [];
@@ -1414,6 +1583,12 @@ export class Lobby extends DurableObject {
         this.rockets = [];
         this.rogue = newRogue();
         this.events = [];
+
+        // The current UFO visit's plan (public/ufo.js), or null, and
+        // when the next ones are due.
+        this.ufo = null;
+        this.ufoDue = [];
+        this.ufoCount = 0;
     }
 
     moveAsteroids(dt) {
@@ -1704,6 +1879,9 @@ export class Lobby extends DurableObject {
             for (const a of this.asteroids) consider("a", a, a.x, a.z, a.radius);
             for (const m of this.mines) consider("m", m, m.x, m.z, MINES.radius);
 
+            const ufo = this.ufoShield(now);
+            if (ufo) consider("u", null, ufo.x, ufo.z, UFO.shieldRadius - BULLET.radius);
+
             for (const s of this.ships.values()) {
                 if (s === b.owner || !this.canBeHit(s, now)) continue;
 
@@ -1722,6 +1900,9 @@ export class Lobby extends DurableObject {
                     this.damageAsteroid(best.ref, 1, b.owner);
                 } else if (best.kind === "m") {
                     this.destroyMine(best.ref, b.owner);
+                } else if (best.kind === "u") {
+                    // Absorbed by the UFO's shield.
+                    this.event(["uh", round2(hx), round2(hz), b.owner.id, 0]);
                 } else {
                     this.damageShip(best.ref, BULLET.shipDamage, b.owner, now);
                 }
@@ -1742,8 +1923,10 @@ export class Lobby extends DurableObject {
     // A laser beam pierces: everything touching it while it is visible
     // takes damage, once. Its reach is exactly what is drawn.
     applyBeam(beam, now) {
+        const range = beam.range ?? LASER.range;
+
         const touches = (x, z, radius) => segmentHit(
-            beam.ox, beam.oz, beam.dx, beam.dz, LASER.range,
+            beam.ox, beam.oz, beam.dx, beam.dz, range,
             x, z, radius + LASER.halfWidth
         ) >= 0;
 
@@ -1834,6 +2017,21 @@ export class Lobby extends DurableObject {
                     const p = this.shipPosition(s, now);
 
                     if (dist(rocket, p) < SHIP.radius + ROCKET.contactRadius) { contact = true; break; }
+                }
+            }
+
+            if (!contact) {
+                const ufo = this.ufoShield(now);
+
+                if (ufo && dist(rocket, ufo) < UFO.shieldRadius + ROCKET.contactRadius) {
+                    contact = true;
+
+                    // It goes off against the shield, not inside it.
+                    const d = dist(rocket, ufo) || 1;
+                    const hx = ufo.x + ((rocket.x - ufo.x) / d) * UFO.shieldRadius;
+                    const hz = ufo.z + ((rocket.z - ufo.z) / d) * UFO.shieldRadius;
+
+                    this.event(["uh", round2(hx), round2(hz), rocket.owner.id, 2]);
                 }
             }
 
@@ -2294,7 +2492,8 @@ export class Lobby extends DurableObject {
             a: this.asteroids.map(asteroidArray),
             m: this.mines.map(mineArray),
             c: this.crystals.map(crystalArray),
-            lb: this.standings().map((s) => [s.id, s.score, s.kills, s.deaths])
+            lb: this.standings().map((s) => [s.id, s.score, s.kills, s.deaths]),
+            u: this.ufo
         };
     }
 
@@ -2532,4 +2731,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED };
+export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };

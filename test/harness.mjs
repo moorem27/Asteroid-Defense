@@ -57,7 +57,12 @@ export class WorkerResponse {
 // WebSocketPair
 // ------------------------------------------------------------
 
+// A number, or a function returning one per message (for jitter).
 let deliveryDelayMs = 0;
+
+function nextDelay() {
+    return typeof deliveryDelayMs === "function" ? deliveryDelayMs() : deliveryDelayMs;
+}
 
 export function setNetworkDelay(ms) {
     deliveryDelayMs = ms;
@@ -80,11 +85,15 @@ class PairEnd {
         const peer = this.peer;
         const payload = String(data);
 
+        // Like TCP: delays vary, but messages never overtake each other.
+        const at = Math.max(Date.now() + nextDelay(), this.lastDeliverAt ?? 0);
+        this.lastDeliverAt = at;
+
         setTimeout(() => {
             if (peer.readyState === 1 || peer.readyState === 2) {
                 peer.onDeliver?.(payload);
             }
-        }, deliveryDelayMs);
+        }, Math.max(0, at - Date.now()));
     }
 
     close(code = 1000, reason = "") {
@@ -98,7 +107,7 @@ class PairEnd {
                 peer.readyState = 3;
                 peer.onRemoteClose?.(code, reason);
             }
-        }, deliveryDelayMs);
+        }, nextDelay());
     }
 
     serializeAttachment(value) {
@@ -294,7 +303,10 @@ export async function loadWorker(env = {}) {
     }
 
     const filterUrl = pathToFileURL(path.join(here, "../public/name-filter.js")).href;
-    const withFilter = patched.replace('"../public/name-filter.js"', JSON.stringify(filterUrl));
+    const ufoUrl = pathToFileURL(path.join(here, "../public/ufo.js")).href;
+    const withFilter = patched
+        .replace('"../public/name-filter.js"', JSON.stringify(filterUrl))
+        .replace('"../public/ufo.js"', JSON.stringify(ufoUrl));
 
     const outDir = path.join(here, ".build");
     await mkdir(outDir, { recursive: true });

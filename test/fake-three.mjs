@@ -183,6 +183,7 @@ class Geometry {
     rotateX() { return this; }
     setAttribute(name, attr) { this.attributes[name] = attr; return this; }
     setFromPoints() { return this; }
+    setIndex(index) { this.index = index; return this; }
     dispose() {}
 }
 

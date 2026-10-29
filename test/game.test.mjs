@@ -49,7 +49,10 @@ export const __test = {
     state, net, player, asteroids, mines, pickups, bullets, rockets,
     weapons, assets, blackHole, warp, LASER_CONFIG,
     retroThrusters, canvas: renderer.domElement, records,
+    activateWarp, deactivateWarp, get warpLens() { return warpLens; },
+    getNetworkState,
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
+    ufo, UFO, ufoState, ufoNow,
     get multiplayer() { return multiplayer; }
 };
 `;
@@ -57,6 +60,7 @@ export const __test = {
     await writeFile(path.join(dir, "game.js"), source);
     await copyFile(path.join(publicDir, "multiplayer.js"), path.join(dir, "multiplayer.js"));
     await copyFile(path.join(publicDir, "name-filter.js"), path.join(dir, "name-filter.js"));
+    await copyFile(path.join(publicDir, "ufo.js"), path.join(dir, "ufo.js"));
 
     const mod = await import(pathToFileURL(path.join(dir, "game.js")).href);
 
@@ -359,6 +363,60 @@ test("all-time leaderboard: shown at startup, updated at round end, your record 
     stopGames();
 });
 
+test("all-time: passing the record shows it live as NEW RECORD; it resets with the round", async () => {
+    const server = await loadWorker();
+
+    const mm = server.env.MATCHMAKER.get(server.env.MATCHMAKER.idFromName("global"));
+    await mm.recordScores([{ key: "old", name: "ACE", color: "#ff0000", score: 1000, kills: 0 }]);
+
+    const game = await loadGame(server);
+    const { dom } = game;
+
+    await waitFor(() => game.t.net.active, 3000, "online");
+    await waitFor(async () => { await play(game, 50); return !dom.el("all-time-best").hidden; }, 2000, "HUD line");
+
+    const line = dom.el("all-time-best");
+    const score = dom.el("all-time-score");
+
+    assert.equal(score.textContent, "1,000");
+    assert.equal(line.classList.contains("live"), false);
+
+    // Below the record: still the official one.
+    const ship = serverShip(game);
+    ship.score = 900;
+    ship.dirty = true;
+    await play(game, 200);
+
+    assert.equal(score.textContent, "1,000");
+    assert.equal(line.classList.contains("live"), false);
+
+    // Past it: live.
+    ship.score = 1500;
+    ship.dirty = true;
+    await play(game, 200);
+
+    assert.equal(score.textContent, "1,500");
+    assert.equal(line.classList.contains("live"), true);
+
+    // A new round starts at 0: back to the official record (not yet
+    // 1,500, since this test skips the round-end report).
+    const lobby = quietLobby(server);
+    lobby.reportRecords = async () => null;
+    lobby.round.endsAt = Date.now();
+
+    await waitFor(async () => { await play(game, 50); return game.t.net.round?.phase === "ended"; }, 3000, "round over");
+    assert.equal(line.classList.contains("live"), false, "not live between rounds");
+
+    lobby.round.nextAt = Date.now();
+    await waitFor(async () => { await play(game, 50); return game.t.net.round?.n === 2; }, 3000, "round 2");
+    await play(game, 200);
+
+    assert.equal(score.textContent, "1,000");
+    assert.equal(line.classList.contains("live"), false);
+
+    stopGames();
+});
+
 test("all-time leaderboard: hidden (and harmless) when the server is unreachable", async () => {
     const server = await loadWorker();
     server.down = true;
@@ -537,6 +595,97 @@ test("solo laser: the drawn beam matches its hit area (range, width, moving rock
     stopGames();
 });
 
+test("warp lens: bends the background while the warp is on, follows the ship, then switches off", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+    await play(game, 200);
+
+    assert.equal(t.warpLens, null, "not created until needed");
+
+    t.activateWarp();
+    await play(game, 900);
+
+    const lens = t.warpLens;
+    assert.ok(lens, "created");
+    assert.equal(lens.mesh.visible, true);
+    assert.ok(lens.mesh.material.uniforms.uStrength.value > 0.9, "full strength once grown");
+    assert.ok(Math.abs(lens.mesh.position.x - t.player.position.x) < 1e-6, "centered on the ship");
+    assert.ok(lens.mesh.material.fragmentShader.includes("uRimStrength"));
+
+    t.deactivateWarp();
+    await play(game, 100);
+
+    assert.equal(lens.mesh.visible, false, "off with the warp");
+
+    stopGames();
+});
+
+test("reverse jets: fire when slowing down, as strongly as the ship is slowing; reverse unchanged", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+
+    // Keyboard steering, quiet world.
+    t.state.spawnTimer = 1e9;
+    t.state.mineTimer = 1e9;
+    t.state.pickupTimer = 1e9;
+    dom.key("keydown", "KeyA");
+    dom.key("keyup", "KeyA");
+
+    const rt = t.retroThrusters;
+
+    // Full forward thrust: no reverse jets.
+    dom.key("keydown", "KeyW");
+    await play(game, 900);
+    assert.ok(rt.level < 0.05, `cruising: ${rt.level.toFixed(2)}`);
+
+    // Let go: the ship coasts to a stop and the jets fire, then taper
+    // off as it slows.
+    dom.key("keyup", "KeyW");
+    await play(game, 250);
+
+    const early = rt.level;
+    assert.ok(early > 0.25 && early < 0.95, `coasting at speed: ${early.toFixed(2)}`);
+    assert.equal(t.getNetworkState().thrust, 0, "not sent as reverse");
+
+    await play(game, 900);
+    const later = rt.level;
+    assert.ok(later < early, `tapering: ${later.toFixed(2)} < ${early.toFixed(2)}`);
+
+    await play(game, 1800);
+    assert.ok(rt.level < 0.05, `stopped: ${rt.level.toFixed(2)}`);
+
+    // Braking hard (reverse while moving forward): full.
+    dom.key("keydown", "KeyW");
+    await play(game, 700);
+    dom.key("keyup", "KeyW");
+    dom.key("keydown", "KeyS");
+    await play(game, 250);
+    assert.ok(rt.level > 0.9, `hard brake: ${rt.level.toFixed(2)}`);
+
+    // Holding reverse at full reverse speed: still full, as before.
+    await play(game, 1500);
+    assert.ok(rt.level > 0.9, `reversing: ${rt.level.toFixed(2)}`);
+    assert.equal(t.getNetworkState().thrust, -1);
+
+    // Let go while reversing: slowing from backward motion pushes the
+    // ship forward, which these jets can't do, so they go out.
+    dom.key("keyup", "KeyS");
+    await play(game, 600);
+    assert.ok(rt.level < 0.1, `slowing a reverse: ${rt.level.toFixed(2)}`);
+
+    stopGames();
+});
+
 test("solo rockets: none without the trigger; one per trigger pull", async () => {
     const server = await loadWorker();
     server.down = true;
@@ -581,6 +730,211 @@ async function soloGame() {
 function touchEvent(game, type, id, x, y) {
     game.t.canvas.dispatch(type, { pointerId: id, pointerType: "touch", clientX: x, clientY: y, button: 0 });
 }
+
+// ---- UFO visits --------------------------------------------------------
+
+// Run frames until `cond` holds.
+async function playUntil(game, cond, ms, label, each = null) {
+    const end = Date.now() + ms;
+
+    while (!cond()) {
+        if (Date.now() > end) throw new Error(`Timed out waiting for ${label}`);
+        each?.();
+        game.dom.frame();
+        await sleep(16);
+    }
+}
+
+// Put the current visit's hover point at (x, z) and let it settle into
+// watching (past materializing).
+function settleUfo(t, x, z) {
+    const plan = t.ufo.plan;
+    const shift = t.ufoNow() - plan.s - 2500;
+
+    plan.s += shift;
+    for (const leg of plan.legs) leg[0] += shift;
+
+    plan.legs = [[plan.legs[0][0], x, z]];
+    plan.o = 30;
+}
+
+test("UFO (solo): visits, shrugs off bullets, lasers and rockets, turns rocks aside, then zooms off", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    // Without ufo.glb a simpler stand-in saucer is drawn.
+    globalThis.__missingModels = new Set(["assets/ufo.glb"]);
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+
+    globalThis.__missingModels = null;
+
+    t.state.spawnTimer = 1e9;
+    t.state.mineTimer = 1e9;
+    t.state.pickupTimer = 1e9;
+    t.asteroids.length = 0;
+
+    // Visits are scheduled once or twice a match, the first a minute
+    // or more in.
+    assert.ok(t.ufo.soloDue.length >= 1 && t.ufo.soloDue.length <= 2, "one or two visits");
+    assert.ok(t.ufo.soloDue[0] >= 60, "not right away");
+
+    // Bring the first one forward.
+    t.ufo.soloDue[0] = t.state.matchTime;
+    await play(game, 100);
+
+    assert.ok(t.ufo.plan, "a visit started");
+    assert.ok(t.ufo.group.visible, "the saucer is drawn");
+    assert.equal(dom.el("message").textContent, "UNIDENTIFIED CRAFT DETECTED");
+
+    const p = t.player.position.clone();
+    settleUfo(t, p.x, p.z + 12);
+    t.player.velocity.set(0, 0, 0);
+    await play(game, 100, () => faceForward(game));
+
+    const s = t.ufoState(t.ufo.plan, t.ufoNow());
+    assert.equal(s.phase, "observe");
+    assert.ok(s.solid, "shield up");
+
+    const { Vector3 } = await import(pathToFileURL(path.join(here, "fake-three.mjs")).href);
+
+    // A rock right behind it, in the line of fire.
+    t.createAsteroid(new Vector3(p.x, 0, p.z + 22), 0.72);
+    const behind = t.asteroids.at(-1);
+    behind.velocity.set(0, 0, 0);
+
+    const score = t.state.score;
+
+    // Bullets: absorbed.
+    t.fireSelectedWeapon();
+    await play(game, 600, () => faceForward(game));
+
+    assert.equal(t.bullets.length, 0, "bullet gone");
+    assert.ok(t.asteroids.includes(behind), "the rock behind it is untouched");
+    assert.ok(t.ufo.hits.length > 0, "the shield lit up where it was hit");
+    assert.equal(dom.el("message").textContent, "SHOTS HAVE NO EFFECT");
+    assert.equal(t.state.score, score, "no points");
+
+    // Laser: stopped at the shield.
+    t.state.score = 20000;
+    t.checkWeaponUnlocks();
+    t.selectWeapon("laser");
+    t.ufo.hits.length = 0;
+
+    t.fireSelectedWeapon();
+    await play(game, 300, () => faceForward(game));
+
+    assert.ok(t.asteroids.includes(behind), "the laser didn't reach the rock");
+    assert.ok(t.ufo.hits.length > 0, "laser impact on the shield");
+
+    // Rockets: go off against it.
+    t.selectWeapon("rockets");
+    t.fireSelectedWeapon();
+    assert.equal(t.rockets.length, 1, "rocket away");
+    await playUntil(game, () => t.rockets.length === 0, 3000, "rocket detonated", () => faceForward(game));
+    await play(game, 50, () => faceForward(game));
+
+    assert.ok(t.asteroids.includes(behind), "the rocket didn't get through");
+    assert.ok(t.ufo.plan, "still here");
+
+    // Rocks glance off the shield.
+    const at = t.ufoState(t.ufo.plan, t.ufoNow());
+    t.createAsteroid(new Vector3(at.x + 6, 0, at.z), 0.72);
+    const rock = t.asteroids.at(-1);
+    rock.velocity.set(-5, 0, 0);
+
+    await play(game, 1200, () => faceForward(game));
+    assert.ok(rock.velocity.x > 0, "bounced away");
+
+    // The ship can't fly through it either (and takes no damage).
+    const lives = t.state.lives;
+    const now = t.ufoState(t.ufo.plan, t.ufoNow());
+    t.player.position.set(now.x + 0.5, 0, now.z);
+    await play(game, 50);
+
+    const after = t.ufoState(t.ufo.plan, t.ufoNow());
+    const gap = Math.hypot(t.player.position.x - after.x, t.player.position.z - after.z);
+    assert.ok(gap >= t.UFO.shieldRadius, "pushed outside the shield");
+    assert.equal(t.state.lives, lives, "no damage");
+
+    // Time to go: it charges up, then it's gone.
+    t.ufo.plan.f = t.ufoNow();
+    await play(game, 1000);
+    assert.equal(t.ufoState(t.ufo.plan, t.ufoNow()).phase, "charge");
+
+    await playUntil(game, () => !t.ufo.plan, 3000, "gone");
+    dom.frame();
+
+    assert.ok(!t.ufo.group.visible, "not drawn any more");
+    assert.ok(t.ufo.departLens || t.ufo.streaks.some((x) => x.holder.visible), "left a warp and a streak");
+
+    stopGames();
+});
+
+test("UFO (solo): the black hole sends it away", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+
+    t.ufo.soloDue[0] = t.state.matchTime;
+    await play(game, 100);
+    settleUfo(t, t.player.position.x, t.player.position.z + 12);
+
+    t.state.matchTime = 5 * 60;
+    await play(game, 100);
+
+    assert.ok(t.blackHole.active, "black hole");
+    assert.ok(Number.isFinite(t.ufo.plan.f), "told to leave");
+
+    await playUntil(game, () => !t.ufo.plan, 4000, "gone");
+
+    stopGames();
+});
+
+test("UFO (online): the server's visit is drawn, shots are absorbed, and it leaves at round end", async () => {
+    const game = await bootOnline();
+    const { t } = game;
+    const lobby = quietLobby(game.server);
+
+    lobby.asteroids = [];
+    lobby.ufoDue = [Date.now()];
+
+    await waitFor(() => t.ufo.plan, 2000, "visit arrives");
+    assert.equal(String(t.ufo.plan.w), t.multiplayer.selfId, "it came to watch this pilot");
+    assert.ok(t.ufo.net, "on the server's clock");
+
+    await play(game, 100, () => faceForward(game));
+    assert.ok(t.ufo.group.visible);
+
+    // Hover it right ahead, as the server sees it too.
+    const p = t.player.position;
+    settleUfo(t, p.x, p.z + 12);
+    lobby.ufo = JSON.parse(JSON.stringify(t.ufo.plan));
+
+    const rock = lobby.spawnAsteroid(p.x, p.z + 22, 0.72, 0, 0);
+    serverShip(game).shieldUntil = 0;
+
+    await play(game, 300, () => faceForward(game));
+
+    t.fireSelectedWeapon();
+    await play(game, 700, () => faceForward(game));
+
+    assert.ok(lobby.asteroids.includes(rock), "the server's rock is untouched");
+    assert.ok(t.ufo.hits.length > 0 || t.ufo.shotNotice, "the shield lit up");
+
+    // The round ends: it leaves (everyone is told).
+    lobby.round.endsAt = Date.now();
+    await waitFor(() => Number.isFinite(t.ufo.plan?.f) || !t.ufo.plan, 2000, "told to leave");
+
+    stopGames();
+});
 
 test("mouse controls are unchanged: drag steers toward the cursor, click fires", async () => {
     const game = await soloGame();

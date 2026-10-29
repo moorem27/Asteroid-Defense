@@ -19,6 +19,7 @@ import {
 } from "./harness.mjs";
 
 import { Multiplayer, _internals } from "../public/multiplayer.js";
+import { createUfoPlan, ufoState, UFO } from "../public/ufo.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -120,6 +121,7 @@ function quietLobby(server) {
     lobby.spawnThings = () => {};
     lobby.despawnFarAsteroids = () => {};
     lobby.rogue.timer = 1e9;
+    lobby.ufoDue = [];
 
     return lobby;
 }
@@ -358,11 +360,18 @@ test("laser: also hits a rock that moves into the beam while it is visible", asy
 
     shipOf(lobby, a).score = 15000;
 
-    // Just off the beam when fired, crossing into it fast.
-    const crosser = lobby.spawnAsteroid(1.6, 20, 0.72, -12, 0);
-
     await hold([[a, 0, 0]], 150);
+
+    // Just off the beam when fired, crossing into it fast. (Spawned
+    // right before firing, or it would already be past.)
+    const crosser = lobby.spawnAsteroid(1.6, 20, 0.72, -12, 0);
+    crosser.radius = 0.5;
+
     a.fire(1, 0, 1.1, 0);
+
+    await sleep(10);
+    assert.ok(lobby.asteroids.includes(crosser), "not touching the beam when it fired");
+
     await hold([[a, 0, 0]], 400);
 
     assert.ok(!lobby.asteroids.includes(crosser), "hit while crossing");
@@ -429,6 +438,140 @@ test("rockets fire on the trigger, home on a target ahead, and vaporize without 
     assert.ok(!lobby.asteroids.includes(target), "target destroyed");
     assert.ok(!lobby.asteroids.includes(neighbor), "neighbor in the blast destroyed");
     assert.equal(lobby.asteroids.length, 0, "no fragments");
+
+    shutdownAll();
+});
+
+// ---- UFO visits -------------------------------------------------------
+
+// A visit hovering at (x, z), already watching (past materializing).
+function placeUfo(lobby, x, z, watch = null) {
+    const now = Date.now();
+
+    lobby.ufo = createUfoPlan(Math.random, { id: 99, startMs: now - 2500, x, z, halfW: 230, halfH: 145, watch });
+    lobby.ufo.legs = [[now - 2500, x, z]];
+    lobby.ufo.o = 30;
+
+    return lobby.ufo;
+}
+
+test("UFO: once or twice a round, it visits a pilot; everyone gets the plan; then it's gone", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = server.lobbies()[0].instance;
+
+    // Scheduled for this round: one or two visits, minutes in.
+    const start = lobby.round.startedAt;
+    assert.ok(lobby.ufoDue.length >= 1 && lobby.ufoDue.length <= 2, "one or two visits");
+    assert.ok(lobby.ufoDue[0] - start >= 2 * 60_000, "not right away");
+
+    lobby.spawnThings = () => {};
+    lobby.ufoDue = [Date.now()];
+
+    await hold([[a, 0, 0], [b, 40, 20]], 200);
+
+    await waitFor(() => a.eventsOf("us").length && b.eventsOf("us").length, 1000, "plan sent");
+
+    const plan = a.eventsOf("us")[0][1];
+    const watched = plan.w === a.id ? [0, 0] : [40, 20];
+
+    assert.ok([a.id, b.id].includes(plan.w), "watching a pilot in the lobby");
+    assert.ok(Math.hypot(plan.legs[0][1] - watched[0], plan.legs[0][2] - watched[1]) < 13, "near them");
+    assert.deepEqual(b.eventsOf("us")[0][1], plan, "same plan for everyone");
+
+    await waitFor(() => a.worlds.some((w) => w.u?.id === plan.id), 2000, "in the world sync");
+
+    // Long past its departure: forgotten.
+    lobby.ufo.s -= 60_000;
+    for (const leg of lobby.ufo.legs) leg[0] -= 60_000;
+
+    await waitFor(() => lobby.ufo === null, 500, "gone");
+    await waitFor(() => a.worlds.at(-1).u === null, 2000, "world says none");
+
+    shutdownAll();
+});
+
+test("UFO: it glides after the pilot it's watching", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+
+    await hold([[a, 0, 0]], 150);
+    placeUfo(lobby, 0, 10, a.id);
+    lobby.ufo.legs[0][0] -= 5000;
+
+    await hold([[a, 60, 0]], 300);
+
+    const us = a.eventsOf("us").at(-1);
+    assert.ok(us, "plan update sent");
+    assert.equal(us[1].legs.length, 2, "a new hover point");
+    assert.ok(Math.hypot(us[1].legs[1][1] - 60, us[1].legs[1][2]) < 13, "near where the pilot went");
+
+    shutdownAll();
+});
+
+test("UFO: its shield absorbs bullets, stops lasers and rockets, and turns asteroids aside", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+
+    shipOf(lobby, a).score = 20000;
+    placeUfo(lobby, 0, 14);
+
+    const behind = lobby.spawnAsteroid(0, 30, 0.72, 0, 0);
+
+    await hold([[a, 0, 0]], 150);
+
+    a.fire(0, 0, 1.1, 0);
+    await waitFor(() => a.eventsOf("uh").length, 1000, "bullet absorbed");
+
+    const bh = a.eventsOf("uh")[0];
+    assert.equal(bh[3], a.id);
+    assert.equal(bh[4], 0, "a bullet");
+    assert.equal(a.eventsOf("bh").length, 0, "it hit nothing else");
+
+    a.fire(1, 0, 1.1, 0);
+    await waitFor(() => a.eventsOf("uh").some((e) => e[4] === 1), 1000, "laser stopped");
+    await hold([[a, 0, 0]], 300);
+
+    a.fire(2, 0, 1.1, 0);
+    await waitFor(() => a.eventsOf("uh").some((e) => e[4] === 2), 3000, "rocket went off on it");
+    assert.ok(a.eventsOf("rx").length >= 1, "rocket exploded");
+
+    assert.ok(lobby.asteroids.includes(behind), "nothing got through to the rock behind it");
+    assert.equal(shipOf(lobby, a).score, 20000, "no points for shooting it");
+
+    // A rock flying at it glances off.
+    const s = ufoState(lobby.ufo, Date.now());
+    const rock = lobby.spawnAsteroid(s.x + 6, s.z, 0.72, -8, 0);
+
+    await waitFor(() => rock.vx > 0, 1500, "bounced");
+    assert.ok(a.eventsOf("au").some((e) => e[1] === rock.id), "everyone told");
+
+    const now = ufoState(lobby.ufo, Date.now());
+    assert.ok(Math.hypot(rock.x - now.x, rock.z - now.z) >= UFO.shieldRadius, "outside the shield");
+
+    shutdownAll();
+});
+
+test("UFO: leaves when the round ends; a new round schedules new visits", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+
+    await hold([[a, 0, 0]], 100);
+    placeUfo(lobby, 0, 14, a.id);
+
+    lobby.round.endsAt = Date.now();
+
+    await waitFor(() => a.eventsOf("us").some((e) => Number.isFinite(e[1].f)), 1000, "told to leave");
+
+    lobby.round.nextAt = Date.now();
+    await waitFor(() => a.rounds.some((r) => r.phase === "playing" && r.n === 2), 1000, "next round");
+
+    assert.equal(lobby.ufo, null);
+    assert.ok(lobby.ufoDue.length >= 1, "new visits scheduled");
 
     shutdownAll();
 });
@@ -1002,6 +1145,45 @@ test("all-time: a player who leaves mid-round still makes the list, once", async
     shutdownAll();
 });
 
+test("all-time: a record set elsewhere reaches open games on the next check-in, once", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+
+    const synced = [];
+    const orig = a.ws.onmessage;
+
+    a.ws.onmessage = ({ data }) => {
+        const m = JSON.parse(data);
+        if (m.t === "records") synced.push(m);
+        orig({ data });
+    };
+
+    // Another lobby's player sets a record (straight to the Matchmaker).
+    await matchmakerOf(server).recordScores([
+        { key: "elsewhere", name: "ACE", color: "#f00", score: 9999, kills: 0 }
+    ]);
+
+    // This lobby's regular 30-second check-in.
+    await lobby.alarm();
+    await waitFor(() => synced.length === 1, 1000, "sync message");
+
+    assert.equal(synced[0].sync, true);
+    assert.equal(synced[0].top[0].name, "ACE");
+    assert.ok(!("key" in synced[0].top[0]), "keys stay private");
+
+    // Nothing changed: not sent again.
+    await lobby.alarm();
+    await sleep(100);
+    assert.equal(synced.length, 1);
+
+    // A player joining now gets it in their welcome.
+    const b = await rawClient(server, "BRAVO");
+    assert.equal(b.welcome.records?.[0]?.score, 9999);
+
+    shutdownAll();
+});
+
 test("all-time: the leaderboard endpoint fails softly", async () => {
     const server = await loadWorker();
 
@@ -1276,9 +1458,17 @@ test("client: other pilots' ships interpolate, hide when destroyed, show warp", 
         const lobby = server.lobbies()[0].instance;
         const shipB = shipOf(lobby, { id: b.selfId });
 
+        // A stand-in for game.js's background-bending lens.
+        const lensCalls = [];
+        a.createWarpLens = () => ({
+            update: (...args) => lensCalls.push(args),
+            dispose: () => {}
+        });
+
         shipB.warpUntil = Date.now() + 5000;
         await runFrames([[a, { playing: true, x: 0, z: 0, r: 0, life: 1, weapon: 0 }], [b, () => ({ playing: true, x, z: 0, r: 0, life: bLife(), weapon: 0 })]], 300);
         assert.equal(remote.visual.bubble.visible, true, "warp bubble shown");
+        assert.ok(lensCalls.length > 0 && lensCalls.at(-1)[5] > 0.5, "lens bending around their bubble");
 
         shipB.warpUntil = 0;
         shipB.shieldUntil = 0;
@@ -1286,6 +1476,104 @@ test("client: other pilots' ships interpolate, hide when destroyed, show warp", 
 
         await runFrames([[a, { playing: true, x: 0, z: 0, r: 0, life: 1, weapon: 0 }]], 200);
         assert.equal(remote.visual.group.visible, false, "hidden once destroyed");
+
+        shutdownAll();
+    } finally {
+        setNetworkDelay(0);
+    }
+});
+
+// ---- Responsiveness ----------------------------------------------------
+
+test("server sends ship positions 20 times a second, moved on to 'now'", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    quietLobby(server);
+
+    // B reports once: at x = 0, moving +x at 10 units/s.
+    b.send({ t: "s", l: b.you.lf, x: 0, z: 0, r: 0, vx: 10, vz: 0, th: 1, st: 1, w: 0 });
+
+    const before = a.snaps.length;
+    await sleep(1000);
+
+    const rate = a.snaps.length - before;
+    assert.ok(rate >= 17, `${rate} snapshots in 1 s`);
+
+    // A snapshot ~150 ms after the report shows B ~1.5 units along.
+    a.snaps.length = 0;
+    b.send({ t: "s", l: b.you.lf, x: 0, z: 0, r: 0, vx: 10, vz: 0, th: 1, st: 1, w: 0 });
+    await sleep(150);
+
+    const row = a.snaps.at(-1).p.find((p) => p[0] === b.id);
+    assert.ok(row[1] > 0.8 && row[1] <= 2.05, `x = ${row[1]}`);
+
+    shutdownAll();
+});
+
+test("client: sends at once when turning or braking; fewer messages when cruising straight", async () => {
+    const server = await loadWorker();
+    const a = makeClient(server, "ALPHA");
+    await waitFor(() => a.isOnline(), 2000, "online");
+
+    let sent = 0;
+    const realSend = a.socket.send.bind(a.socket);
+    a.socket.send = (data) => {
+        if (JSON.parse(data).t === "s") sent++;
+        realSend(data);
+    };
+
+    // Cruising straight at a steady speed.
+    let x = 0;
+    await runFrames([[a, () => ({ playing: true, x: (x += 0.16), z: 0, r: 0, vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 })]], 1000);
+    const cruising = sent;
+
+    // Turning hard the whole time.
+    sent = 0;
+    let r = 0;
+    await runFrames([[a, () => ({ playing: true, x, z: 0, r: (r += 0.05), vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 })]], 1000);
+    const turning = sent;
+
+    assert.ok(cruising >= 8 && cruising <= 12, `cruising: ${cruising}/s`);
+    assert.ok(turning >= 16 && turning <= 21, `turning: ${turning}/s`);
+
+    // Letting go of the throttle is sent at once (well before 100 ms).
+    sent = 0;
+    await runFrames([[a, () => ({ playing: true, x, z: 0, r, vx: 10, vz: 0, thrust: 1, life: 1, weapon: 0 })]], 120);
+    sent = 0;
+    await runFrames([[a, () => ({ playing: true, x, z: 0, r, vx: 10, vz: 0, thrust: 0, life: 1, weapon: 0 })]], 60);
+    assert.ok(sent >= 1, "thrust change sent within 60 ms");
+
+    shutdownAll();
+});
+
+test("client: the smoothing delay adapts to the connection (small when steady, larger when jittery)", async () => {
+    try {
+        setNetworkDelay(25);
+
+        let server = await loadWorker();
+        let a = makeClient(server, "ALPHA");
+        let b = makeClient(server, "BRAVO");
+        await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "online");
+        await runFrames([[a, local(a, 0, 0)], [b, local(b, 5, 5)]], 1500);
+
+        const steady = a.renderDelay();
+        assert.ok(steady <= 80, `steady connection: ${steady.toFixed(0)} ms (was 120)`);
+
+        shutdownAll();
+
+        // 20-120 ms per message, like a busy mobile connection.
+        setNetworkDelay(() => 20 + Math.random() * 100);
+
+        server = await loadWorker();
+        a = makeClient(server, "ALPHA");
+        b = makeClient(server, "BRAVO");
+        await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "online");
+        await runFrames([[a, local(a, 0, 0)], [b, local(b, 5, 5)]], 2000);
+
+        const jittery = a.renderDelay();
+        assert.ok(jittery > steady + 30, `jittery connection: ${jittery.toFixed(0)} ms`);
+        assert.ok(jittery <= 160);
 
         shutdownAll();
     } finally {

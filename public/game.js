@@ -3,6 +3,9 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
+// UFO visits: flight plans shared with the server (see UFO VISITS).
+import { UFO, createUfoPlan, ufoState, ufoFollow, ufoLeave, ufoZoomAt, readUfoPlan } from "./ufo.js";
+
 
 // ============================================================
 // ASTEROID DEFENSE
@@ -15,7 +18,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 // Missing elements (null) are not cached, so they can appear later.
 // Shown in the browser console at startup, so it is easy to confirm
 // which version of game.js the browser is actually running.
-const GAME_BUILD = "multiplayer-2-callsigns";
+const GAME_BUILD = "multiplayer-2-ufo";
 window.ASTEROID_DEFENSE_BUILD = GAME_BUILD;
 
 const domCache = Object.create(null);
@@ -655,12 +658,21 @@ const assetFiles = {
     // Reverse (retro) thrusters (blender/generate_retro_thrusters.py)
     retroJet: "retro_jet.glb",
     retroGlow: "retro_glow.glb",
-    retroPuff: "retro_puff.glb"
+    retroPuff: "retro_puff.glb",
+
+    // Flying saucer (blender/generate_ufo.py)
+    ufo: "ufo.glb"
 };
 
 // Cosmetic extras: if one of these files is missing, the game still
-// runs and the effect is simply skipped.
-const OPTIONAL_ASSETS = new Set(["retroJet", "retroGlow", "retroPuff"]);
+// runs and the effect is skipped (or, for the UFO, a simpler stand-in
+// is drawn). Each with the script that makes it.
+const OPTIONAL_ASSETS = new Map([
+    ["retroJet", "generate_retro_thrusters.py"],
+    ["retroGlow", "generate_retro_thrusters.py"],
+    ["retroPuff", "generate_retro_thrusters.py"],
+    ["ufo", "generate_ufo.py"]
+]);
 
 function loadGLB(filename) {
     return new Promise((resolve, reject) => {
@@ -684,8 +696,8 @@ async function loadAssets() {
             } catch (error) {
                 if (OPTIONAL_ASSETS.has(key)) {
                     console.warn(
-                        `${filename} not found; skipping that effect. ` +
-                        "Run blender/generate_retro_thrusters.py to create it."
+                        `${filename} not found; using a simpler version. ` +
+                        `Run blender/${OPTIONAL_ASSETS.get(key)} to create it.`
                     );
                     return;
                 }
@@ -2426,7 +2438,14 @@ function tryFireLaser() {
     const ox = player.position.x + dx * LASER_CONFIG.noseOffset;
     const oz = player.position.z + dz * LASER_CONFIG.noseOffset;
 
-    const beam = createLaserBeam(ox, oz, player.rotation, LASER_CONFIG.range);
+    // A UFO's shield stops the beam dead.
+    const length = ufoCutBeam(ox, oz, dx, dz, LASER_CONFIG.range);
+    const beam = createLaserBeam(ox, oz, player.rotation, length);
+
+    if (length < LASER_CONFIG.range) {
+        ufoShieldHit(ox + dx * length, oz + dz * length);
+        ufoNoteOwnShot();
+    }
 
     if (net.active) {
         // The server applies the hits; impacts arrive as events.
@@ -2801,6 +2820,23 @@ function updateRockets(dt) {
             )) {
                 contact = true;
                 break;
+            }
+        }
+
+        // ...or against a UFO's shield (which shrugs it off).
+        const shield = contact ? null : ufoSolid();
+
+        if (shield) {
+            const dx = rocket.position.x - shield.x;
+            const dz = rocket.position.z - shield.z;
+            const d = Math.hypot(dx, dz);
+
+            if (d < UFO.shieldRadius + ROCKET_CONFIG.contactRadius) {
+                contact = true;
+
+                const k = UFO.shieldRadius / (d || 1);
+                ufoShieldHit(shield.x + dx * k, shield.z + dz * k);
+                ufoNoteOwnShot();
             }
         }
 
@@ -4250,11 +4286,1314 @@ function updateWarpLens() {
 
 
 // ------------------------------------------------------------
+// UFO VISITS
+// Once or twice a game a flying saucer (blender/generate_ufo.py)
+// appears near a pilot in a crackle of electricity, hovers and watches
+// for a while, then charges up, wraps itself in a warp bubble and is
+// gone at an impossible speed, leaving a streak of light.
+//
+// Nothing hurts it. Its shield only shows where it's hit: a patch of
+// rippling, crackling light around the impact (like the shields in
+// Independence Day), a bend in the background there, and a lightning
+// arc from the nearest high-voltage node to the impact point. Bullets
+// are absorbed, lasers stop dead, rockets go off against it and
+// asteroids glance off. It's powered by electricity, so there are no
+// exhaust flames anywhere: arcs, glow and warped space instead.
+//
+// Where it is and what it's doing come from its plan (public/ufo.js).
+// Solo, this file makes the plans; online the server does, so every
+// pilot in a lobby sees the same saucer.
+// ------------------------------------------------------------
+
+const UFO_CONFIG = {
+    // Height above the play field (above ships and rocks).
+    height: 2.1,
+
+    // Turns per second of the saucer's slow spin (radians), and how
+    // much faster it spins at full charge.
+    spin: 0.8,
+    chargeSpin: 7,
+
+    // The six Tesla node tips (blender/generate_ufo.py: NODE_RADIUS,
+    // NODE_TIP_Z, NODE_COUNT).
+    nodeRadius: 1.12,
+    nodeHeight: 0.36,
+    nodeCount: 6,
+
+    // The shield shell around the saucer: flattened into a dome.
+    shieldFlatten: 0.55,
+
+    // How long one impact glows (seconds), and how many show at once.
+    hitLife: 0.9,
+    maxHits: 6,
+
+    // Lightning: bolts in the pool, points along each.
+    bolts: 14,
+    boltPoints: 12,
+
+    // Solo: the first visit comes between these match times
+    // (seconds); a second one, with this chance, between these.
+    soloFirst: [60, 140],
+    soloSecondChance: 0.5,
+    soloSecond: [175, 245],
+
+    // Not in the last bit of a solo match (before the black hole).
+    soloNotAfter: MATCH_SECONDS - 25,
+
+    // Messages only for visits this close to you (unless it came to
+    // watch you).
+    noticeDistance: 45
+};
+
+const ufo = {
+    plan: null,
+
+    // True if the plan came from the server (times are server time).
+    net: false,
+
+    // Solo clock (ms) that plans are timed by.
+    clock: 0,
+
+    // Solo visits still to come (match times, seconds).
+    soloDue: [],
+
+    // Built once, reused for every visit.
+    built: false,
+    group: null,
+    tilt: null,
+    model: null,
+    shield: null,
+    lens: null,
+    hitLenses: [],
+    bolts: [],
+    flashes: [],
+    streaks: [],
+    lights: [],
+
+    hits: [],
+    spin: 0,
+    phase: "gone",
+    zoomed: false,
+    arcTimer: 0,
+    noticed: false,
+    shotNotice: false,
+
+    // The warp lens left where it vanished.
+    departLens: null
+};
+
+// ---- Shaders ------------------------------------------------
+
+// The shield: invisible except around recent impacts, where a patch
+// of the shell lights up in rippling, crackling, color-shifting light
+// that spreads a little and fades. While the saucer materializes or
+// charges, the whole shell shimmers faintly.
+const UFO_SHIELD_VERTEX_SHADER = /* glsl */ `
+    varying vec3 vDir;
+    varying vec3 vViewNormal;
+
+    void main() {
+        vDir = normalize(position);
+        vViewNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const UFO_SHIELD_FRAGMENT_SHADER = /* glsl */ `
+    // Per impact: direction from the center (xyz) and age in seconds
+    // (w; negative = unused).
+    uniform vec4 uHits[${UFO_CONFIG.maxHits}];
+    uniform float uHitLife;
+    uniform float uTime;
+    uniform float uShimmer;
+
+    varying vec3 vDir;
+    varying vec3 vViewNormal;
+
+    float hash(vec3 p) {
+        p = fract(p * 0.3183099 + 0.1);
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+
+    float noise(vec3 x) {
+        vec3 i = floor(x);
+        vec3 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+
+        return mix(
+            mix(mix(hash(i), hash(i + vec3(1, 0, 0)), f.x),
+                mix(hash(i + vec3(0, 1, 0)), hash(i + vec3(1, 1, 0)), f.x), f.y),
+            mix(mix(hash(i + vec3(0, 0, 1)), hash(i + vec3(1, 0, 1)), f.x),
+                mix(hash(i + vec3(0, 1, 1)), hash(i + vec3(1, 1, 1)), f.x), f.y),
+            f.z
+        );
+    }
+
+    // Thin bright veins, like current crawling over the surface.
+    float veins(vec3 p) {
+        float n = noise(p) * 0.65 + noise(p * 2.3) * 0.35;
+        return pow(1.0 - abs(n * 2.0 - 1.0), 10.0);
+    }
+
+    void main() {
+        vec3 color = vec3(0.0);
+        float edge = pow(1.0 - abs(vViewNormal.z), 1.5);
+
+        for (int i = 0; i < ${UFO_CONFIG.maxHits}; i++) {
+            vec4 hit = uHits[i];
+            if (hit.w < 0.0 || hit.w > uHitLife) continue;
+
+            float age = hit.w;
+            float life = 1.0 - age / uHitLife;
+            float angle = acos(clamp(dot(vDir, hit.xyz), -1.0, 1.0));
+
+            // The patch: small at first, spreading a little, never
+            // more than about a quarter of the shell.
+            float reach = min(0.32 + age * 1.1, 0.95);
+            float patch = 1.0 - smoothstep(reach * 0.35, reach, angle);
+
+            // A ripple running outward through the patch.
+            float ring = exp(-pow((angle - age * 1.15) / 0.07, 2.0)) * patch;
+
+            // A white-hot point where it struck.
+            float core = exp(-angle * angle / 0.01) * (1.0 - smoothstep(0.0, 0.3, age));
+
+            // Crackling current inside the patch.
+            float crackle = veins(vDir * 13.0 + vec3(uTime * 5.0, -uTime * 3.0, uTime * 4.0));
+
+            // Bent light: the color shifts through blue and violet
+            // across the ripple, like a fringe of warped space.
+            float shift = 0.5 + 0.5 * sin(angle * 26.0 - age * 22.0);
+            vec3 tint = mix(vec3(0.25, 0.7, 1.0), vec3(0.75, 0.45, 1.0), shift);
+
+            float glow = patch * (0.28 + edge * 0.5) + ring * 1.1 + crackle * patch * 1.4;
+
+            color += tint * glow * life + vec3(0.9, 0.97, 1.0) * core * 2.2;
+        }
+
+        // Whole-shell shimmer (materializing, charging).
+        if (uShimmer > 0.0) {
+            float crackle = veins(vDir * 9.0 + vec3(0.0, uTime * 4.0, uTime * 2.0));
+            color += vec3(0.35, 0.75, 1.0) * uShimmer * (0.08 + edge * 0.55 + crackle * 0.6);
+        }
+
+        // Additive: black adds nothing.
+        gl_FragColor = vec4(color, 1.0);
+    }
+`;
+
+// Light: streaks and flashes. A soft-edged strip (or disc) that fades.
+const UFO_GLOW_VERTEX_SHADER = /* glsl */ `
+    varying vec2 vUv;
+
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const UFO_GLOW_FRAGMENT_SHADER = /* glsl */ `
+    uniform vec3 uColor;
+    uniform float uFade;
+
+    // 0: radial flash; 1: streak (bright at the start, uv.y = 1).
+    uniform float uStreak;
+
+    varying vec2 vUv;
+
+    void main() {
+        float glow;
+
+        if (uStreak > 0.5) {
+            float across = 1.0 - abs(vUv.x * 2.0 - 1.0);
+            float along = vUv.y;
+
+            glow = pow(across, 2.5) * pow(along, 1.6) + pow(across, 12.0) * along * 1.5;
+        } else {
+            float r = length(vUv - 0.5) * 2.0;
+            glow = pow(max(0.0, 1.0 - r), 2.2) + exp(-r * r * 30.0) * 1.5;
+        }
+
+        vec3 color = mix(uColor, vec3(1.0), clamp(glow - 0.8, 0.0, 1.0));
+        gl_FragColor = vec4(color * glow * uFade, 1.0);
+    }
+`;
+
+// ---- Building it --------------------------------------------
+
+// Stand-in saucer if ufo.glb hasn't been generated.
+function createFallbackUfoModel() {
+    const group = new THREE.Group();
+    group.name = "UfoFallback";
+
+    const hull = new THREE.Mesh(
+        new THREE.SphereGeometry(1.65, 40, 14),
+        new THREE.MeshStandardMaterial({ color: 0xa8b0bc, metalness: 0.85, roughness: 0.28 })
+    );
+    hull.scale.set(1, 0.18, 1);
+    group.add(hull);
+
+    const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.6, 24, 12),
+        new THREE.MeshStandardMaterial({
+            color: 0x1f4d6b, emissive: 0x1f4d6b, emissiveIntensity: 0.6,
+            metalness: 0.1, roughness: 0.05
+        })
+    );
+    dome.position.y = 0.3;
+    dome.scale.set(1, 0.7, 1);
+    group.add(dome);
+
+    const cyan = new THREE.MeshStandardMaterial({ color: 0x59ffff, emissive: 0x59ffff, emissiveIntensity: 3 });
+    const white = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 3 });
+    const tip = new THREE.MeshStandardMaterial({ color: 0x8cccff, emissive: 0x8cccff, emissiveIntensity: 4 });
+
+    cyan.name = "UFO | light_cyan";
+    white.name = "UFO | light_white";
+    tip.name = "UFO | node_tip";
+
+    const bulb = new THREE.SphereGeometry(0.05, 8, 6);
+
+    for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const light = new THREE.Mesh(bulb, i % 2 ? white : cyan);
+        light.position.set(Math.cos(a) * 1.69, 0, -Math.sin(a) * 1.69);
+        group.add(light);
+    }
+
+    for (let i = 0; i < UFO_CONFIG.nodeCount; i++) {
+        const a = (i / UFO_CONFIG.nodeCount) * Math.PI * 2;
+        const node = new THREE.Mesh(bulb, tip);
+        node.scale.setScalar(1.2);
+        node.position.set(
+            Math.cos(a) * UFO_CONFIG.nodeRadius,
+            UFO_CONFIG.nodeHeight,
+            -Math.sin(a) * UFO_CONFIG.nodeRadius
+        );
+        group.add(node);
+    }
+
+    return group;
+}
+
+// One lightning bolt: a jagged ribbon facing the camera, drawn twice
+// (a white core inside a blue glow).
+function createUfoBolt() {
+    const n = UFO_CONFIG.boltPoints;
+
+    const index = [];
+
+    for (let i = 0; i < n - 1; i++) {
+        const a = i * 2;
+        index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+
+    const makeLayer = (color, opacity) => {
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(n * 2 * 3);
+
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setIndex(index);
+
+        const material = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            toneMapped: false
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.frustumCulled = false;
+        mesh.visible = false;
+        mesh.renderOrder = 3;
+        scene.add(mesh);
+
+        return { mesh, positions, geometry, material };
+    };
+
+    return {
+        glow: makeLayer(0x4fb4ff, 0.55),
+        core: makeLayer(0xeaf6ff, 1),
+        points: new Float32Array(n * 3),
+        from: new THREE.Vector3(),
+        to: new THREE.Vector3(),
+        life: 0,
+        maxLife: 0,
+        jag: 0.3,
+        width: 1,
+        rejag: 0,
+        follow: null
+    };
+}
+
+function createUfoGlowMesh(streak) {
+    const material = new THREE.ShaderMaterial({
+        vertexShader: UFO_GLOW_VERTEX_SHADER,
+        fragmentShader: UFO_GLOW_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        uniforms: {
+            uColor: { value: new THREE.Color(0x66ccff) },
+            uFade: { value: 0 },
+            uStreak: { value: streak ? 1 : 0 }
+        }
+    });
+
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+    plane.rotation.x = -Math.PI / 2;
+
+    const holder = new THREE.Group();
+    holder.add(plane);
+    holder.visible = false;
+    holder.renderOrder = 3;
+    plane.renderOrder = 3;
+    scene.add(holder);
+
+    return { holder, plane, material, life: 0, maxLife: 1, size: 1, length: 1 };
+}
+
+function buildUfo() {
+    if (ufo.built) return;
+    ufo.built = true;
+
+    const group = new THREE.Group();
+    group.name = "Ufo";
+    group.visible = false;
+
+    // tilt (leans toward who it's watching) > model (spins).
+    const tilt = new THREE.Group();
+    group.add(tilt);
+
+    const model = assets.ufo ? cloneModel("ufo") : createFallbackUfoModel();
+    ownMaterials(model);
+    tilt.add(model);
+
+    // Lights animated by name (see generate_ufo.py MATERIALS).
+    model.traverse((child) => {
+        if (!child.isMesh) return;
+
+        const material = child.material;
+        const key = String(material?.name ?? "").replace(/^UFO \| /, "");
+
+        if (["light_cyan", "light_white", "beacon", "node_tip", "emitter", "dome"].includes(key)) {
+            material.userData.base = material.emissiveIntensity ?? 1;
+            ufo.lights.push({ key, material });
+        }
+    });
+
+    // The shield shell (on the group, so it doesn't spin with the
+    // saucer).
+    const hits = new Float32Array(UFO_CONFIG.maxHits * 4).fill(-1);
+
+    const shieldMaterial = new THREE.ShaderMaterial({
+        vertexShader: UFO_SHIELD_VERTEX_SHADER,
+        fragmentShader: UFO_SHIELD_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        uniforms: {
+            uHits: { value: hits },
+            uHitLife: { value: UFO_CONFIG.hitLife },
+            uTime: { value: 0 },
+            uShimmer: { value: 0 }
+        }
+    });
+
+    const shield = new THREE.Mesh(
+        new THREE.SphereGeometry(UFO.shieldRadius, 48, 24),
+        shieldMaterial
+    );
+    shield.scale.y = UFO_CONFIG.shieldFlatten;
+    shield.renderOrder = 2;
+    group.add(shield);
+
+    scene.add(group);
+
+    ufo.group = group;
+    ufo.tilt = tilt;
+    ufo.model = model;
+    ufo.shield = shield;
+    ufo.shieldHits = hits;
+
+    for (let i = 0; i < UFO_CONFIG.bolts; i++) ufo.bolts.push(createUfoBolt());
+    for (let i = 0; i < 4; i++) ufo.flashes.push(createUfoGlowMesh(false));
+    for (let i = 0; i < 2; i++) ufo.streaks.push(createUfoGlowMesh(true));
+}
+
+// ---- Clock and schedule -------------------------------------
+
+function ufoNow() {
+    return ufo.net ? netServerNow() : ufo.clock;
+}
+
+function scheduleSoloUfo() {
+    ufo.soloDue = [randomRange(...UFO_CONFIG.soloFirst)];
+
+    if (Math.random() < UFO_CONFIG.soloSecondChance) {
+        ufo.soloDue.push(randomRange(...UFO_CONFIG.soloSecond));
+    }
+}
+
+// Back to no visit (a new game or round). Effects already in the air
+// finish by themselves.
+function resetUfo() {
+    ufo.plan = null;
+    ufo.net = false;
+    ufo.phase = "gone";
+    ufo.hits.length = 0;
+
+    if (ufo.group) ufo.group.visible = false;
+
+    scheduleSoloUfo();
+}
+
+// Online: a plan from the server (or null: no visit).
+function setNetUfoPlan(raw) {
+    const plan = readUfoPlan(raw);
+
+    if (!plan) {
+        // The server has no visit. Let one that's already leaving
+        // finish; drop one that isn't (e.g. a new round).
+        if (ufo.plan && ufo.net && ufo.phase !== "depart") clearUfoVisit();
+        return;
+    }
+
+    const same = ufo.plan && ufo.net && ufo.plan.id === plan.id;
+
+    if (!same) {
+        clearUfoVisit();
+        ufo.noticed = false;
+        ufo.shotNotice = false;
+        ufo.zoomed = false;
+    }
+
+    ufo.plan = plan;
+    ufo.net = true;
+}
+
+function clearUfoVisit() {
+    ufo.plan = null;
+    ufo.phase = "gone";
+    ufo.hits.length = 0;
+    if (ufo.group) ufo.group.visible = false;
+}
+
+// Going offline mid-visit: keep the saucer, on the solo clock.
+function ufoGoSolo() {
+    ufo.soloDue = ufo.soloDue.filter((t) => t > state.matchTime + 20);
+
+    if (!ufo.plan || !ufo.net) {
+        ufo.net = false;
+        return;
+    }
+
+    const shift = ufo.clock - netServerNow();
+    const plan = ufo.plan;
+
+    plan.s += shift;
+    if (Number.isFinite(plan.f)) plan.f += shift;
+    for (const leg of plan.legs) leg[0] += shift;
+
+    plan.w = null;
+    ufo.net = false;
+}
+
+function startSoloUfo() {
+    const now = ufo.clock;
+
+    ufo.plan = createUfoPlan(Math.random, {
+        id: (ufo.plan?.id ?? 0) + 1,
+        startMs: now,
+        x: player.position.x,
+        z: player.position.z,
+        halfW: HALF_W,
+        halfH: HALF_H,
+        watch: null
+    });
+
+    ufo.net = false;
+    ufo.noticed = false;
+    ufo.shotNotice = false;
+    ufo.zoomed = false;
+}
+
+// The black hole: any visitor leaves at once.
+function ufoLeaveNow() {
+    if (ufo.plan && !ufo.net) ufoLeave(ufo.plan, ufoNow());
+}
+
+// ---- Where it is --------------------------------------------
+
+// The UFO's state if its shield is stopping shots right now, or null.
+function ufoSolid() {
+    if (!ufo.plan) return null;
+
+    const s = ufoState(ufo.plan, ufoNow());
+    return s.solid ? s : null;
+}
+
+// Laser: the length of a beam from (ox, oz) along (dx, dz) once the
+// shield has stopped it (or `length` if it misses).
+function ufoCutBeam(ox, oz, dx, dz, length) {
+    const s = ufoSolid();
+    if (!s) return length;
+
+    const along = beamHitDistance(ox, oz, dx, dz, length, s.x, s.z, UFO.shieldRadius);
+
+    return along >= 0 ? along : length;
+}
+
+// World positions of the node tips right now.
+function ufoNodePosition(i, target) {
+    const angle = (i / UFO_CONFIG.nodeCount) * Math.PI * 2 + ufo.spin;
+    const scale = ufo.model ? ufo.model.scale.x : 1;
+    const g = ufo.group.position;
+
+    return target.set(
+        g.x + Math.cos(angle) * UFO_CONFIG.nodeRadius * scale,
+        g.y + UFO_CONFIG.nodeHeight * scale,
+        g.z - Math.sin(angle) * UFO_CONFIG.nodeRadius * scale
+    );
+}
+
+// ---- Effects ------------------------------------------------
+
+const ufoTemp = new THREE.Vector3();
+const ufoTemp2 = new THREE.Vector3();
+
+function ufoFire(pool, setup) {
+    // The oldest one is reused if they're all busy.
+    let best = pool[0];
+
+    for (const item of pool) {
+        if (item.life <= 0) { best = item; break; }
+        if (item.life < best.life) best = item;
+    }
+
+    setup(best);
+    return best;
+}
+
+// A lightning arc from `from` to `to`. `follow`: an index of a node
+// the bolt stays attached to as the saucer spins.
+function ufoBolt(from, to, life = 0.12, jag = 0.35, width = 1, follow = null) {
+    if (!ufo.built) return;
+
+    ufoFire(ufo.bolts, (bolt) => {
+        bolt.from.copy(from);
+        bolt.to.copy(to);
+        bolt.life = bolt.maxLife = life;
+        bolt.jag = jag;
+        bolt.width = width;
+        bolt.rejag = 0;
+        bolt.follow = follow;
+    });
+}
+
+function shapeUfoBolt(bolt) {
+    const n = UFO_CONFIG.boltPoints;
+    const a = bolt.from;
+    const b = bolt.to;
+
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz) || 1;
+
+    // Sideways (in the plane the camera looks down on).
+    const px = -dz / length;
+    const pz = dx / length;
+
+    const pts = bolt.points;
+    let wander = 0;
+
+    for (let i = 0; i < n; i++) {
+        const t = i / (n - 1);
+        const taper = Math.sin(t * Math.PI);
+
+        wander = wander * 0.55 + (Math.random() * 2 - 1);
+        const off = wander * bolt.jag * taper * Math.min(1.5, 0.4 + length * 0.25);
+
+        pts[i * 3] = a.x + dx * t + px * off;
+        pts[i * 3 + 1] = a.y + (b.y - a.y) * t + 0.05;
+        pts[i * 3 + 2] = a.z + dz * t + pz * off;
+    }
+
+    const fill = (layer, halfWidth) => {
+        const out = layer.positions;
+
+        for (let i = 0; i < n; i++) {
+            // Sideways at this point, from its neighbors.
+            const i0 = Math.max(0, i - 1);
+            const i1 = Math.min(n - 1, i + 1);
+
+            let sx = pts[i1 * 3] - pts[i0 * 3];
+            let sz = pts[i1 * 3 + 2] - pts[i0 * 3 + 2];
+            const sl = Math.hypot(sx, sz) || 1;
+
+            const w = halfWidth * (0.55 + 0.45 * Math.sin((i / (n - 1)) * Math.PI));
+            const nx = (-sz / sl) * w;
+            const nz = (sx / sl) * w;
+
+            out[i * 6] = pts[i * 3] + nx;
+            out[i * 6 + 1] = pts[i * 3 + 1];
+            out[i * 6 + 2] = pts[i * 3 + 2] + nz;
+            out[i * 6 + 3] = pts[i * 3] - nx;
+            out[i * 6 + 4] = pts[i * 3 + 1];
+            out[i * 6 + 5] = pts[i * 3 + 2] - nz;
+        }
+
+        layer.geometry.attributes.position.needsUpdate = true;
+    };
+
+    fill(bolt.core, 0.035 * bolt.width);
+    fill(bolt.glow, 0.16 * bolt.width);
+}
+
+function updateUfoBolts(dt) {
+    for (const bolt of ufo.bolts) {
+        if (bolt.life <= 0) {
+            if (bolt.core.mesh.visible) {
+                bolt.core.mesh.visible = false;
+                bolt.glow.mesh.visible = false;
+            }
+            continue;
+        }
+
+        bolt.life -= dt;
+
+        if (bolt.follow !== null && ufo.group.visible) {
+            ufoNodePosition(bolt.follow, bolt.from);
+        }
+
+        // Lightning flickers: a new path every few frames.
+        bolt.rejag -= dt;
+
+        if (bolt.rejag <= 0) {
+            bolt.rejag = 0.035;
+            shapeUfoBolt(bolt);
+        }
+
+        const k = Math.max(0, bolt.life / bolt.maxLife);
+        const flicker = 0.6 + Math.random() * 0.4;
+
+        bolt.core.material.opacity = Math.min(1, k * 2) * flicker;
+        bolt.glow.material.opacity = 0.55 * k * flicker;
+        bolt.core.mesh.visible = true;
+        bolt.glow.mesh.visible = true;
+    }
+}
+
+// A burst of light at (x, z).
+function ufoFlash(x, z, size, life, color = 0x66ccff) {
+    if (!ufo.built) return;
+
+    ufoFire(ufo.flashes, (flash) => {
+        flash.holder.position.set(x, UFO_CONFIG.height + 0.4, z);
+        flash.size = size;
+        flash.life = flash.maxLife = life;
+        flash.material.uniforms.uColor.value.set(color);
+    });
+}
+
+// A streak of light from (x, z) along (dirX, dirZ).
+function ufoStreak(x, z, dirX, dirZ) {
+    if (!ufo.built) return;
+
+    ufoFire(ufo.streaks, (streak) => {
+        streak.holder.position.set(x, UFO_CONFIG.height, z);
+        streak.holder.rotation.y = Math.atan2(dirX, dirZ);
+        streak.life = streak.maxLife = 0.75;
+        streak.material.uniforms.uColor.value.set(0x7fd8ff);
+    });
+}
+
+function updateUfoGlows(dt) {
+    for (const flash of ufo.flashes) {
+        if (flash.life <= 0) {
+            flash.holder.visible = false;
+            continue;
+        }
+
+        flash.life -= dt;
+
+        const k = Math.max(0, flash.life / flash.maxLife);
+        const size = flash.size * (0.6 + (1 - k) * 0.8);
+
+        flash.holder.visible = true;
+        flash.holder.scale.set(size, 1, size);
+        flash.material.uniforms.uFade.value = k * k;
+    }
+
+    for (const streak of ufo.streaks) {
+        if (streak.life <= 0) {
+            streak.holder.visible = false;
+            continue;
+        }
+
+        streak.life -= dt;
+
+        // Shoots out to full length almost at once, then thins and
+        // fades from the start point outward.
+        const age = streak.maxLife - streak.life;
+        const k = Math.max(0, streak.life / streak.maxLife);
+        const length = 70 * Math.min(1, age / 0.08);
+        const width = 1.5 * (0.35 + 0.65 * k);
+
+        streak.holder.visible = true;
+        streak.plane.scale.set(width, length, 1);
+        streak.plane.position.set(0, 0, length / 2);
+        streak.material.uniforms.uFade.value = k * k * 1.4;
+    }
+}
+
+// The shield lights up where it was hit. (x, z): the impact point.
+// `arc`: a lightning arc from the nearest node to it.
+function ufoShieldHit(x, z, arc = true) {
+    if (!ufo.plan || !ufo.built || !ufo.group.visible) return;
+
+    const g = ufo.group.position;
+    let dx = x - g.x;
+    let dz = z - g.z;
+    const d = Math.hypot(dx, dz) || 1;
+
+    dx /= d;
+    dz /= d;
+
+    // Tilted up a little: from above, the patch then covers the
+    // impact point and spreads in over the dome.
+    const up = 0.45;
+    const len = Math.hypot(dx, up, dz);
+
+    ufo.hits.push({ x: dx / len, y: up / len, z: dz / len, age: 0 });
+
+    if (ufo.hits.length > UFO_CONFIG.maxHits) ufo.hits.shift();
+
+    const px = g.x + dx * UFO.shieldRadius;
+    const pz = g.z + dz * UFO.shieldRadius;
+
+    ufoFlash(px, pz, 1.6, 0.22, 0x9fdcff);
+
+    // Bend the background around the impact, briefly.
+    ufoImpactLens(px, pz);
+
+    if (arc) {
+        // From the nearest node.
+        let best = 0;
+        let bestDist = Infinity;
+
+        for (let i = 0; i < UFO_CONFIG.nodeCount; i++) {
+            ufoNodePosition(i, ufoTemp);
+            const nd = Math.hypot(ufoTemp.x - px, ufoTemp.z - pz);
+
+            if (nd < bestDist) { bestDist = nd; best = i; }
+        }
+
+        ufoNodePosition(best, ufoTemp);
+        ufoTemp2.set(px, g.y + 0.3, pz);
+        ufoBolt(ufoTemp, ufoTemp2, 0.16, 0.4, 1, best);
+
+        // A little forked spark at the point.
+        const a = Math.random() * Math.PI * 2;
+        ufoTemp.set(px + Math.cos(a) * 0.9, g.y + 0.3, pz + Math.sin(a) * 0.9);
+        ufoBolt(ufoTemp2, ufoTemp, 0.1, 0.3, 0.6);
+    }
+}
+
+// Your own shot hit it: a message the first time each visit.
+function ufoNoteOwnShot() {
+    if (ufo.shotNotice) return;
+    ufo.shotNotice = true;
+
+    $("message").textContent = "SHOTS HAVE NO EFFECT";
+}
+
+function ufoImpactLens(x, z) {
+    if (ufo.hitLenses.length === 0) {
+        for (let i = 0; i < 3; i++) {
+            const lens = createWarpLens();
+            if (!lens) break;
+            ufo.hitLenses.push({ lens, x: 0, z: 0, life: 0 });
+        }
+    }
+
+    if (ufo.hitLenses.length === 0) return;
+
+    const item = ufoFire(ufo.hitLenses, (h) => {
+        h.x = x;
+        h.z = z;
+        h.life = 0.55;
+    });
+
+    return item;
+}
+
+function updateUfoLenses(dt, s) {
+    for (const h of ufo.hitLenses) {
+        if (h.life <= 0) {
+            h.lens.update(0, 0, 0, 1, 0, 0, 0);
+            continue;
+        }
+
+        h.life -= dt;
+
+        const k = Math.max(0, h.life / 0.55);
+        h.lens.update(h.x, h.z, 0, 1, 0, Math.min(1, k * 1.6), performance.now() / 1000, 0.28 + (1 - k) * 0.12);
+    }
+
+    // Around the saucer: a faint hum of bent space, stronger as it
+    // materializes and charges, full as it opens its bubble.
+    if (s && ufo.group.visible) {
+        if (!ufo.lens) ufo.lens = createWarpLens();
+
+        if (ufo.lens) {
+            let strength = 0.14;
+            let scale = 0.62;
+            let speed = 0;
+
+            if (s.phase === "arrive") {
+                strength = 0.14 + 0.7 * (1 - s.progress);
+                scale = 0.4 + 0.3 * s.progress;
+            } else if (s.phase === "charge") {
+                strength = 0.14 + 0.66 * s.progress;
+                scale = 0.62 + 0.25 * s.progress;
+            } else if (s.phase === "depart") {
+                strength = 1;
+                scale = 0.9;
+                speed = 1;
+            }
+
+            ufo.lens.update(s.x, s.z, s.dirX, s.dirZ, speed, strength, performance.now() / 1000, scale);
+        }
+    } else if (ufo.lens) {
+        ufo.lens.update(0, 0, 0, 1, 0, 0, 0);
+    }
+
+    // The bubble left where it vanished, collapsing.
+    const d = ufo.departLens;
+
+    if (d && d.life > 0) {
+        d.life -= dt;
+
+        if (d.life <= 0) {
+            d.lens.update(0, 0, 0, 1, 0, 0, 0);
+        } else {
+            const k = d.life / d.maxLife;
+            d.lens.update(d.x, d.z, d.dirX, d.dirZ, 1, k, performance.now() / 1000, 0.9 + (1 - k) * 0.7);
+        }
+    }
+}
+
+// ---- Per frame ----------------------------------------------
+
+function updateUfo(dt) {
+    if (state.loading) return;
+
+    // The solo clock runs while a game or a visit is going.
+    if (!ufo.net && (state.running || ufo.plan)) ufo.clock += dt * 1000;
+
+    maybeStartSoloUfo();
+
+    if (ufo.built) {
+        updateUfoBolts(dt);
+        updateUfoGlows(dt);
+    }
+
+    if (!ufo.plan) {
+        if (ufo.built) {
+            ufo.group.visible = false;
+            updateUfoLenses(dt, null);
+        }
+        return;
+    }
+
+    buildUfo();
+
+    const plan = ufo.plan;
+    const now = ufoNow();
+    const s = ufoState(plan, now);
+
+    // Solo: glide after the player if they fly off.
+    if (!ufo.net && state.running && !blackHole.active) {
+        ufoFollow(plan, Math.random, player.position.x, player.position.z, now, HALF_W, HALF_H);
+    }
+
+    const previous = ufo.phase;
+    ufo.phase = s.phase;
+
+    if (s.phase === "waiting") {
+        ufo.group.visible = false;
+        updateUfoLenses(dt, null);
+        return;
+    }
+
+    // The instant it goes: a streak, a flash, a collapsing bubble.
+    if (!ufo.zoomed && now >= ufoZoomAt(plan)) {
+        ufo.zoomed = true;
+        ufoVanish(plan, now);
+    }
+
+    if (s.phase === "gone") {
+        if (!ufo.zoomed) {
+            ufo.zoomed = true;
+            ufoVanish(plan, now);
+        }
+
+        clearUfoVisit();
+        updateUfoLenses(dt, null);
+        return;
+    }
+
+    if (previous !== s.phase) ufoPhaseChanged(s, previous);
+
+    const group = ufo.group;
+    group.visible = true;
+
+    // Bobbing gently.
+    const bob = Math.sin(s.t * 1.7) * 0.08;
+    group.position.set(s.x, UFO_CONFIG.height + bob, s.z);
+
+    // Spin: faster and faster as it charges.
+    let spinRate = UFO_CONFIG.spin;
+    if (s.phase === "charge") spinRate += UFO_CONFIG.chargeSpin * s.progress * s.progress;
+    if (s.phase === "depart") spinRate += UFO_CONFIG.chargeSpin;
+
+    ufo.spin += spinRate * dt;
+    ufo.model.rotation.y = ufo.spin;
+
+    // Lean a little toward whoever it's watching.
+    const watched = ufoWatchedPosition();
+
+    if (watched && (s.phase === "observe" || s.phase === "arrive")) {
+        const wx = watched.x - s.x;
+        const wz = watched.z - s.z;
+        const wl = Math.hypot(wx, wz) || 1;
+
+        const lean = 0.14;
+        ufo.tilt.rotation.x += ((wz / wl) * lean - ufo.tilt.rotation.x) * Math.min(1, dt * 2);
+        ufo.tilt.rotation.z += ((-wx / wl) * lean - ufo.tilt.rotation.z) * Math.min(1, dt * 2);
+    } else {
+        ufo.tilt.rotation.x *= 1 - Math.min(1, dt * 3);
+        ufo.tilt.rotation.z *= 1 - Math.min(1, dt * 3);
+    }
+
+    // Materializing: flickering into being.
+    let size = 1;
+    let shimmer = 0;
+
+    if (s.phase === "arrive") {
+        const p = s.progress;
+        size = 0.25 + 0.75 * (p * p * (3 - 2 * p));
+        ufo.model.visible = p > 0.55 || Math.random() < 0.25 + p;
+        shimmer = 1 - p;
+    } else {
+        ufo.model.visible = true;
+    }
+
+    if (s.phase === "charge") shimmer = s.progress * 0.9;
+    if (s.phase === "depart") shimmer = 1;
+
+    ufo.model.scale.setScalar(size);
+
+    // Shield: impacts age; the shell shows them.
+    const hits = ufo.shieldHits;
+    hits.fill(-1);
+
+    for (let i = ufo.hits.length - 1; i >= 0; i--) {
+        const hit = ufo.hits[i];
+        hit.age += dt;
+
+        if (hit.age > UFO_CONFIG.hitLife) {
+            ufo.hits.splice(i, 1);
+        }
+    }
+
+    ufo.hits.forEach((hit, i) => {
+        hits[i * 4] = hit.x;
+        hits[i * 4 + 1] = hit.y;
+        hits[i * 4 + 2] = hit.z;
+        hits[i * 4 + 3] = hit.age;
+    });
+
+    const uniforms = ufo.shield.material.uniforms;
+    uniforms.uTime.value = s.t;
+    uniforms.uShimmer.value = shimmer;
+    ufo.shield.visible = ufo.hits.length > 0 || shimmer > 0.01;
+
+    // Other pilots' bullets stop at the shield (the server's "uh"
+    // event lights it up a moment later).
+    if (ufo.net && s.solid) multiplayer?.stopShotsNear(s.x, s.z, UFO.shieldRadius);
+
+    animateUfoLights(s);
+    ufoCrackle(s, dt);
+    ufoDeflect(s);
+    updateUfoLenses(dt, s);
+}
+
+// Who it's watching (online: the pilot it came to see).
+function ufoWatchedPosition() {
+    if (!ufo.net) return player.mesh ? player.position : null;
+
+    const id = ufo.plan?.w;
+    if (id === null || id === undefined) return null;
+
+    if (netSelf(id)) return net.dead ? null : player.position;
+
+    const ships = multiplayer ? multiplayer.remoteShipPositions() : [];
+    return ships.find((p) => String(p.id) === String(id)) ?? null;
+}
+
+function ufoPhaseChanged(s, previous) {
+    const g = ufo.group.position;
+
+    if (s.phase === "arrive" || (previous === "waiting" || previous === "gone")) {
+        // Materializing: a flash and arcs leaping out of nothing.
+        ufoFlash(s.x, s.z, 7, 0.6);
+
+        for (let i = 0; i < 5; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const r = randomRange(1.5, 3.4);
+
+            ufoTemp.set(s.x, UFO_CONFIG.height, s.z);
+            ufoTemp2.set(s.x + Math.cos(a) * r, UFO_CONFIG.height, s.z + Math.sin(a) * r);
+            ufoBolt(ufoTemp, ufoTemp2, randomRange(0.15, 0.35), 0.5, 1.2);
+        }
+
+        ufoNotice(s);
+    }
+
+    if (s.phase === "charge") {
+        ufoFlash(g.x, g.z, 3, 0.3, 0x99ddff);
+    }
+}
+
+// "UNIDENTIFIED CRAFT DETECTED", if it's near enough to care about.
+function ufoNotice(s) {
+    if (ufo.noticed) return;
+    ufo.noticed = true;
+
+    if (net.active && net.dead) return;
+
+    const watchingYou = !ufo.net || netSelf(ufo.plan?.w);
+    const near = Math.hypot(s.x - player.position.x, s.z - player.position.z) < UFO_CONFIG.noticeDistance;
+
+    if (watchingYou || near) {
+        $("message").textContent = "UNIDENTIFIED CRAFT DETECTED";
+    } else if (ufo.net && ufo.plan?.w !== null && ufo.plan?.w !== undefined) {
+        $("message").textContent = `UFO SIGHTED NEAR ${netName(ufo.plan.w)}`;
+    }
+}
+
+function ufoVanish(plan, now) {
+    // Where it was just before the zoom.
+    const at = ufoState(plan, ufoZoomAt(plan) - 1);
+
+    ufoStreak(at.x, at.z, at.dirX, at.dirZ);
+    ufoFlash(at.x, at.z, 9, 0.5, 0xbfe9ff);
+
+    // Leftover static where it was.
+    for (let i = 0; i < 4; i++) {
+        const a = Math.random() * Math.PI * 2;
+        ufoTemp.set(at.x, UFO_CONFIG.height, at.z);
+        ufoTemp2.set(at.x + Math.cos(a) * 2.6, UFO_CONFIG.height, at.z + Math.sin(a) * 2.6);
+        ufoBolt(ufoTemp, ufoTemp2, randomRange(0.12, 0.3), 0.6, 1);
+    }
+
+    // The warp bubble it opened, left behind and collapsing.
+    const lens = ufo.departLens?.lens ?? createWarpLens();
+
+    if (lens) {
+        ufo.departLens = { lens, x: at.x, z: at.z, dirX: at.dirX, dirZ: at.dirZ, life: 0.8, maxLife: 0.8 };
+    }
+
+    const near = Math.hypot(at.x - player.position.x, at.z - player.position.z);
+
+    if (near < 30) state.screenShake = Math.max(state.screenShake, 0.25);
+
+    if (near < UFO_CONFIG.noticeDistance && ufo.noticed && !(net.active && net.dead) && !blackHole.active) {
+        $("message").textContent = "UFO HAS LEFT THE AREA";
+    }
+}
+
+// Rim lights chase around (the two colors take turns), the beacon
+// pulses, the nodes glow brighter as it charges.
+function animateUfoLights(s) {
+    const t = s.t;
+    const charge = s.phase === "charge" ? s.progress : s.phase === "depart" ? 1 : 0;
+    const rate = 3 + charge * 14;
+    const swap = Math.sin(t * rate) > 0;
+
+    for (const { key, material } of ufo.lights) {
+        const base = material.userData.base ?? 1;
+        let k = 1;
+
+        if (key === "light_cyan") k = swap ? 1.3 : 0.35;
+        else if (key === "light_white") k = swap ? 0.35 : 1.3;
+        else if (key === "beacon") k = 0.5 + 0.5 * Math.max(0, Math.sin(t * 4)) + charge;
+        else if (key === "node_tip") k = 0.7 + charge * 1.8 + Math.random() * 0.3;
+        else if (key === "emitter") k = 0.8 + charge * 1.5 + Math.sin(t * 9) * 0.1;
+        else if (key === "dome") k = 1 + charge * 0.8;
+
+        material.emissiveIntensity = base * k;
+    }
+}
+
+// Idle crackling between the nodes; constant arcing while charging.
+function ufoCrackle(s, dt) {
+    ufo.arcTimer -= dt;
+    if (ufo.arcTimer > 0) return;
+
+    if (s.phase === "observe") {
+        ufo.arcTimer = randomRange(0.5, 1.6);
+    } else if (s.phase === "arrive") {
+        ufo.arcTimer = randomRange(0.05, 0.15);
+    } else if (s.phase === "charge") {
+        ufo.arcTimer = 0.12 - s.progress * 0.09;
+    } else {
+        ufo.arcTimer = 0.03;
+    }
+
+    const n = UFO_CONFIG.nodeCount;
+    const i = Math.floor(Math.random() * n);
+
+    if (s.phase === "observe" || Math.random() < 0.5) {
+        // Node to neighboring node.
+        const j = (i + (Math.random() < 0.5 ? 1 : n - 1)) % n;
+
+        ufoNodePosition(i, ufoTemp);
+        ufoNodePosition(j, ufoTemp2);
+        ufoBolt(ufoTemp, ufoTemp2, randomRange(0.08, 0.16), 0.25, 0.7, i);
+    } else {
+        // Node out to the shield's edge.
+        ufoNodePosition(i, ufoTemp);
+
+        const g = ufo.group.position;
+        const a = Math.atan2(ufoTemp.z - g.z, ufoTemp.x - g.x) + randomRange(-0.5, 0.5);
+
+        ufoTemp2.set(g.x + Math.cos(a) * UFO.shieldRadius, g.y, g.z + Math.sin(a) * UFO.shieldRadius);
+        ufoBolt(ufoTemp, ufoTemp2, randomRange(0.08, 0.14), 0.45, 0.9, i);
+
+        if (s.phase === "charge" && Math.random() < 0.3) {
+            ufoShieldHit(ufoTemp2.x, ufoTemp2.z, false);
+        }
+    }
+}
+
+// Asteroids glance off the shield, and so does your ship (no damage:
+// it just won't let you through).
+function ufoDeflect(s) {
+    if (!s.solid) return;
+
+    for (const asteroid of asteroids) {
+        const p = asteroid.position;
+        const dx = p.x - s.x;
+        const dz = p.z - s.z;
+        const reach = UFO.shieldRadius + asteroid.radius;
+        const d = Math.hypot(dx, dz);
+
+        if (d >= reach || d < 1e-6) continue;
+
+        const nx = dx / d;
+        const nz = dz / d;
+
+        p.x = s.x + nx * reach;
+        p.z = s.z + nz * reach;
+
+        const v = asteroid.velocity;
+        const toward = v.x * nx + v.z * nz;
+
+        if (toward < 0) {
+            v.x -= 2 * toward * nx;
+            v.z -= 2 * toward * nz;
+            ufoShieldHit(s.x + nx * UFO.shieldRadius, s.z + nz * UFO.shieldRadius, Math.random() < 0.5);
+        }
+    }
+
+    if (!player.mesh || (net.active && net.dead) || blackHole.active) return;
+
+    const dx = player.position.x - s.x;
+    const dz = player.position.z - s.z;
+    const reach = UFO.shieldRadius + player.radius;
+    const d = Math.hypot(dx, dz);
+
+    if (d < reach && d > 1e-6) {
+        const nx = dx / d;
+        const nz = dz / d;
+
+        player.position.x = s.x + nx * reach;
+        player.position.z = s.z + nz * reach;
+
+        const v = player.velocity;
+        const toward = v.x * nx + v.z * nz;
+
+        if (toward < 0) {
+            v.x -= 1.6 * toward * nx;
+            v.z -= 1.6 * toward * nz;
+
+            if (toward < -2) {
+                ufoShieldHit(s.x + nx * UFO.shieldRadius, s.z + nz * UFO.shieldRadius);
+                state.screenShake = Math.max(state.screenShake, 0.15);
+            }
+        }
+    }
+}
+
+// Solo: start a visit when one is due.
+function maybeStartSoloUfo() {
+    if (net.active || ufo.plan || !state.running || blackHole.active) return;
+    if (!player.mesh || ufo.soloDue.length === 0) return;
+    if (state.matchTime < ufo.soloDue[0]) return;
+
+    ufo.soloDue.shift();
+
+    if (state.matchTime > UFO_CONFIG.soloNotAfter) {
+        ufo.soloDue.length = 0;
+        return;
+    }
+
+    startSoloUfo();
+}
+
+// Solo: bullets against the shield. True if this bullet was absorbed
+// (its path reached the shield before anything else).
+function ufoAbsorbsBullet(bullet, otherT) {
+    const s = ufoSolid();
+    if (!s) return false;
+
+    const t = sweptCircleHit(
+        (bullet.prevX ?? bullet.position.x) - s.x,
+        (bullet.prevZ ?? bullet.position.z) - s.z,
+        bullet.position.x - s.x,
+        bullet.position.z - s.z,
+        UFO.shieldRadius
+    );
+
+    if (t < 0 || t >= otherT) return false;
+
+    const x0 = bullet.prevX ?? bullet.position.x;
+    const z0 = bullet.prevZ ?? bullet.position.z;
+
+    ufoShieldHit(x0 + (bullet.position.x - x0) * t, z0 + (bullet.position.z - z0) * t);
+
+    return true;
+}
+
+
+// ------------------------------------------------------------
 // ACTIVATE BLACK HOLE
 // ------------------------------------------------------------
 
 function activateBlackHole() {
     if (blackHole.triggered) return;
+
+    // A visiting UFO wants no part of this.
+    ufoLeaveNow();
     if (!blackHole.group) return;
 
     blackHole.active = true;
@@ -6491,6 +7830,13 @@ function resolveCollisions() {
         const mineIndex = firstTargetHit(bullet, mines);
         const mineT = bulletHit.t;
 
+        // A UFO's shield absorbs it, if it gets there first.
+        if (ufo.plan && ufoAbsorbsBullet(bullet, Math.min(asteroidT, mineT))) {
+            removeBullet(bi);
+            ufoNoteOwnShot();
+            continue;
+        }
+
         if (asteroidIndex === -1 && mineIndex === -1) {
             continue;
         }
@@ -6685,6 +8031,9 @@ function resetGame() {
 
     // Clear any lingering retro thruster puffs.
     clearRetroPuffs();
+
+    // No UFO, and new solo visits to come.
+    resetUfo();
 
     // Reset input state.
     firing = false;
@@ -7047,6 +8396,10 @@ function render() {
     camera.position.x = cameraRig.x + shakeX;
     camera.position.z = cameraRig.z + shakeZ;
 
+    // A visiting UFO (it can push the ship aside, so before the
+    // ship's state is sent).
+    updateUfo(dt);
+
     // Send this ship's state to the lobby and move the other pilots'
     // ships. (The module catches its own errors, so this can never
     // stop the frame.)
@@ -7200,6 +8553,9 @@ function onNetOffline() {
     net.pickups.clear();
 
     if (rogue.net) rogue.net = false;
+
+    // A visiting UFO stays, on this browser's clock.
+    ufoGoSolo();
 
     // Solo match clock: what was left of the round, at most a full
     // solo match (and at least 30 seconds).
@@ -7365,6 +8721,9 @@ function applyWorld(message) {
     });
 
     syncList(message.c, net.pickups, pickups, (c) => netSpawnCrystal(c), () => {});
+
+    // The UFO's current visit (or none).
+    if ("u" in message) setNetUfoPlan(message.u);
 }
 
 // Add what's new, update what's known, remove what's gone.
@@ -7561,6 +8920,12 @@ function netBulletSparks() {
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
 
+        if (ufo.plan && ufoAbsorbsBullet(bullet, Infinity)) {
+            ufoNoteOwnShot();
+            removeBullet(i);
+            continue;
+        }
+
         let touching =
             firstTargetHit(bullet, asteroids) !== -1 ||
             firstTargetHit(bullet, mines) !== -1;
@@ -7691,9 +9056,14 @@ function applyNetEvent(e, lag) {
 
         // ---- Weapons ----
         case "l":
-            // Another pilot's laser: [owner, x, z, heading].
+            // Another pilot's laser: [owner, x, z, heading]. (A UFO's
+            // shield stops it.)
             if (!netSelf(e[1])) {
-                createLaserBeam(Number(e[2]), Number(e[3]), Number(e[4]), LASER_CONFIG.range);
+                const x = Number(e[2]);
+                const z = Number(e[3]);
+                const r = Number(e[4]);
+
+                createLaserBeam(x, z, r, ufoCutBeam(x, z, Math.sin(r), Math.cos(r), LASER_CONFIG.range));
             }
             break;
 
@@ -7771,6 +9141,26 @@ function applyNetEvent(e, lag) {
                 activateWarp();
                 warp.remaining = clamp((Number(e[2]) - netServerNow()) / 1000, 1, WARP_DURATION);
             }
+            break;
+        }
+
+        // ---- UFO ----
+        case "us":
+            // A visit starts, or its plan changed: [plan].
+            setNetUfoPlan(e[1]);
+            break;
+
+        case "uh": {
+            // Its shield took a hit: [x, z, by, weapon]. Your own
+            // bullets and lasers already showed theirs.
+            const x = Number(e[1]);
+            const z = Number(e[2]);
+            const mine = netSelf(e[3]);
+
+            if (!mine || Number(e[4]) === 2) ufoShieldHit(x, z);
+            if (mine && Number(e[4]) === 2) ufoNoteOwnShot();
+
+            multiplayer?.stopShotsNear(x, z, 1.4);
             break;
         }
 
