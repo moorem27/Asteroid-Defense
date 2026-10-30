@@ -1,0 +1,18 @@
+# Security headers for every page and file of the game (Cloudflare
+# applies this file to static assets; it is not served itself).
+#
+# Content-Security-Policy: the page may only run scripts, load models,
+# images and styles from this site, and talk to this site's server.
+# The one inline script (the import map in index.html) is allowed by
+# its sha256 hash: if you edit that import map, recompute the hash
+# (see SETUP.md) or the game won't start.
+#
+# frame-ancestors / X-Frame-Options: no other site can embed the game
+# in a frame (clickjacking).
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-lBIL8ypNcoDfLbcuy6MwwDfepPEr9EFYgYRzwmYX9mg='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' blob: data: wss://amaxcon.com wss://www.amaxcon.com; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()

@@ -33,16 +33,18 @@
         IMPORT MAP
         game.js imports "three" and "three/addons/...", and GLTFLoader
         itself imports "three". Mapping both here guarantees a single
-        copy of Three.js is loaded.
-        To run offline, point these at local copies instead, keeping
-        the folder layout of the three package so GLTFLoader's
-        relative imports (../utils/...) still resolve.
+        copy of Three.js is loaded. Three.js (r170) is served from this
+        site (public/vendor/three, laid out like the three package), not
+        a CDN, so nothing outside the site can change what runs.
+        If you change the import map below, update its sha256 in
+        public/_headers (the Content Security Policy), or the browser
+        will refuse it: see SETUP.md.
     -->
     <script type="importmap">
     {
         "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+            "three": "./vendor/three/build/three.module.js",
+            "three/addons/": "./vendor/three/examples/jsm/"
         }
     }
     </script>

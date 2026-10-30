@@ -321,6 +321,9 @@ export async function loadWorker(env = {}) {
     const envRef = { env: null };
 
     const fullEnv = {
+        // Tests put ships wherever they like; the movement check is
+        // tested on its own (pass MOVE_CHECK: "on").
+        MOVE_CHECK: "off",
         ...env,
         MATCHMAKER: new Namespace(mod.Matchmaker, envRef, "Matchmaker"),
         LOBBY: new Namespace(mod.Lobby, envRef, "Lobby")
@@ -396,7 +399,14 @@ export function makeBrowserWebSocket(server) {
             let response;
 
             try {
-                response = await server.fetch(httpUrl, { Upgrade: "websocket" });
+                const headers = { Upgrade: "websocket" };
+
+                // As Cloudflare adds: the player's IP address, and the
+                // page the connection comes from.
+                if (server.clientIp) headers["CF-Connecting-IP"] = server.clientIp;
+                if (server.origin) headers.Origin = server.origin;
+
+                response = await server.fetch(httpUrl, headers);
             } catch {
                 this.fail();
                 return;

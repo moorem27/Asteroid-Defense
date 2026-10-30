@@ -86,6 +86,16 @@ const LAG = {
 
 const ROUND_MS = 15 * 60 * 1000;
 
+// The scenery for each round (the maps in public/game.js). Every new
+// round gets a different one from the round before, and everyone in
+// the lobby sees the same one. Maps only change the background.
+const MAP_NAMES = ["space", "orbit"];
+
+function nextMap(previous) {
+    const choices = MAP_NAMES.filter((m) => m !== previous);
+    return choices[Math.floor(Math.random() * choices.length)] ?? MAP_NAMES[0];
+}
+
 // Between rounds: long enough for the black hole finale and the
 // results screen.
 const INTERMISSION_MS = 22_000;
@@ -110,6 +120,37 @@ const MAX_MESSAGE_BYTES = 2048;
 // and keepalives; this leaves headroom above that.
 const RATE_CAPACITY = 60;
 const RATE_PER_SECOND = 45;
+
+// Abuse. Every message a player sends counts toward Cloudflare's daily
+// request allowance (20 messages = 1 request) even if the game ignores
+// it, so a connection that keeps flooding past the rate limit, or
+// sends an oversized message, is closed rather than just ignored.
+// The real game never comes close.
+const FLOOD = {
+    windowMs: 5000,
+    maxDropped: 100,
+    closeCode: 4008
+};
+
+// At most this many connections from one IP address per lobby (a
+// household or a school on one connection still fits). Cloudflare's
+// rate limiting rule on /api/ws (see SETUP.md) is the main defense
+// against floods of connections.
+const MAX_PER_IP = 6;
+
+// Movement. Ships fly themselves (so steering feels instant), but the
+// server won't believe a move faster than any ship can go: boosted and
+// in a warp bubble a ship does 15 * 1.35 * 2 = 40.5 units/s. A report
+// further than that (plus some slack for uneven delivery) only counts
+// as far as a ship could have flown; if the pilot's own idea of where
+// they are drifts too far from the server's, they're put back.
+const MOVE = {
+    maxSpeed: 45,
+    graceSec: 0.3,
+    slack: 3,
+    maxGapMs: 1500,
+    correctAt: 10
+};
 
 const MATCHMAKER_NAME = "global";
 
@@ -407,6 +448,12 @@ async function handleJoin(request, env, url) {
                 return response;
             }
 
+            // Too many connections from this address: don't go looking
+            // for another lobby to fill.
+            if (response.status === 429) {
+                return response;
+            }
+
             tried.push(lobbyId);
 
             if (response.status === 503) {
@@ -678,6 +725,10 @@ export class Lobby extends DurableObject {
         this.resetWorld();
         this.round = null;
 
+        // The movement check (MOVE). Only the automated tests turn it
+        // off, so they can put ships anywhere.
+        this.moveCheck = env?.MOVE_CHECK !== "off";
+
         // When the last pilot left (see RESUME_GRACE_MS), and the saved
         // round from before a restart, if any.
         this.emptiedAt = 0;
@@ -716,7 +767,7 @@ export class Lobby extends DurableObject {
 
         const resume = {
             savedAt: now,
-            round: { n: this.round.n, startedAt: this.round.startedAt, endsAt: this.round.endsAt },
+            round: { n: this.round.n, map: this.round.map, startedAt: this.round.startedAt, endsAt: this.round.endsAt },
             scores
         };
 
@@ -747,8 +798,12 @@ export class Lobby extends DurableObject {
         this.resetWorld();
         this.departed.clear();
 
+        const map = MAP_NAMES.includes(saved.round.map) ? saved.round.map : nextMap(null);
+        this.lastMap = map;
+
         this.round = {
             n: saved.round.n,
+            map,
             phase: "playing",
             startedAt: saved.round.startedAt,
             endsAt: saved.round.endsAt,
@@ -849,6 +904,12 @@ export class Lobby extends DurableObject {
             return new Response("Lobby full", { status: 503 });
         }
 
+        const ip = request.headers.get("CF-Connecting-IP");
+
+        if (ip && sockets.filter((ws) => readAttachment(ws)?.ip === ip).length >= MAX_PER_IP) {
+            return new Response("Too many connections", { status: 429 });
+        }
+
         const now = Date.now();
 
         // First player into an empty lobby: a fresh world and round,
@@ -897,7 +958,7 @@ export class Lobby extends DurableObject {
         const [client, server] = Object.values(pair);
 
         this.ctx.acceptWebSocket(server);
-        server.serializeAttachment({ id, name, color, token });
+        server.serializeAttachment({ id, name, color, token, ip });
 
         const ship = this.newShip({ id, name, color, token }, now);
 
@@ -1073,6 +1134,20 @@ export class Lobby extends DurableObject {
         }
     }
 
+    // Close an abusive connection.
+    kick(ws, reason) {
+        console.warn(`Closing a connection: ${reason}`);
+
+        try {
+            ws.close(FLOOD.closeCode, reason);
+        } catch {
+            // Already closed.
+        }
+
+        this.removePlayer(ws);
+        this.reportCount().catch(() => {});
+    }
+
     dropStaleSockets(now) {
         for (const ws of this.ctx.getWebSockets()) {
             const ship = this.getShip(ws);
@@ -1169,6 +1244,8 @@ export class Lobby extends DurableObject {
 
     handleMessage(ws, message) {
         if (typeof message !== "string" || message.length > MAX_MESSAGE_BYTES) {
+            // The game never sends these.
+            this.kick(ws, "Message too large");
             return;
         }
 
@@ -1184,7 +1261,22 @@ export class Lobby extends DurableObject {
         );
         ship.tokensAt = now;
 
-        if (ship.tokens < 1) return;
+        if (ship.tokens < 1) {
+            // Over the limit: ignored, and if it keeps up, closed.
+            if (now - (ship.floodAt ?? 0) > FLOOD.windowMs) {
+                ship.floodAt = now;
+                ship.dropped = 0;
+            }
+
+            ship.dropped = (ship.dropped ?? 0) + 1;
+
+            if (ship.dropped > FLOOD.maxDropped) {
+                this.kick(ws, "Too many messages");
+            }
+
+            return;
+        }
+
         ship.tokens -= 1;
 
         let data;
@@ -1276,11 +1368,44 @@ export class Lobby extends DurableObject {
         // The cloak: only once it's unlocked.
         ship.cloaked = Number(data.ck) === 1 && cloakUnlocked(ship.score);
 
-        ship.x = round2(x);
-        ship.z = round2(z);
+        // No faster than a ship can fly (see MOVE).
+        let nx = x;
+        let nz = z;
+
+        if (this.moveCheck && this.round?.phase === "playing") {
+            const gap = Math.min(Math.max(0, now - ship.stateAt), MOVE.maxGapMs) / 1000;
+            const allowed = MOVE.maxSpeed * (gap + MOVE.graceSec) + MOVE.slack;
+            const dx = x - ship.x;
+            const dz = z - ship.z;
+            const far = Math.hypot(dx, dz);
+
+            if (far > allowed) {
+                nx = ship.x + (dx / far) * allowed;
+                nz = ship.z + (dz / far) * allowed;
+
+                // Too far apart: put the pilot back where the server
+                // has them.
+                if (far - allowed > MOVE.correctAt) {
+                    ship.spawnMoved = true;
+                    ship.dirty = true;
+                }
+            }
+        }
+
+        let vx = finite(data.vx, -80, 80) ?? 0;
+        let vz = finite(data.vz, -80, 80) ?? 0;
+        const speed = Math.hypot(vx, vz);
+
+        if (speed > MOVE.maxSpeed) {
+            vx *= MOVE.maxSpeed / speed;
+            vz *= MOVE.maxSpeed / speed;
+        }
+
+        ship.x = round2(clamp(nx, -HALF_W, HALF_W));
+        ship.z = round2(clamp(nz, -HALF_H, HALF_H));
         ship.r = round2(r % (Math.PI * 2));
-        ship.vx = round2(finite(data.vx, -80, 80) ?? 0);
-        ship.vz = round2(finite(data.vz, -80, 80) ?? 0);
+        ship.vx = round2(vx);
+        ship.vz = round2(vz);
         ship.th = Math.round(finite(data.th, -1, 1) ?? 0);
         ship.stateAt = now;
     }
@@ -1683,8 +1808,13 @@ export class Lobby extends DurableObject {
         this.resetWorld();
         this.departed.clear();
 
+        // Never the same map twice in a row.
+        const map = nextMap(this.round?.map ?? this.lastMap ?? null);
+        this.lastMap = map;
+
         this.round = {
             n,
+            map,
             phase: "playing",
             startedAt: now,
             endsAt: now + ROUND_MS,
@@ -1800,6 +1930,7 @@ export class Lobby extends DurableObject {
 
         return {
             n: r.n,
+            map: r.map,
             phase: r.phase,
             endsAt: r.endsAt,
             nextAt: r.nextAt,
@@ -3105,4 +3236,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };
+export const _internals = { MAP_NAMES, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };

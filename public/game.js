@@ -88,9 +88,12 @@ function loadLegacyBackground() {
 // MAPS
 // Each map is a set of three parallax layers: an opaque back layer,
 // then two see-through ones (the warp and black hole lenses expect
-// exactly three, in that order). One is picked at random every time
-// the game loads; add ?map=space or ?map=orbit to the address to
-// choose. Maps only change the scenery: the game plays the same.
+// exactly three, in that order). Online, the server picks the map for
+// each round, never the same one twice running, and everyone in the
+// lobby sees it; solo, the browser alternates (it remembers the last
+// one). Add ?map=space or ?map=orbit to the address to always show
+// one (for testing). Maps only change the scenery: the game plays the
+// same.
 //
 // "orbit" is low Earth orbit over a chain of tropical islands
 // (blender/generate_islands.py): the sea and islands far below
@@ -176,16 +179,47 @@ const MAPS = {
     }
 };
 
+// ?map=space or ?map=orbit in the address: always that map (for
+// testing), whatever the server picks.
+let mapForced = false;
+
+const LAST_MAP_KEY = "asteroidDefense.lastMap";
+
+function rememberMap(name) {
+    try {
+        localStorage.setItem(LAST_MAP_KEY, name);
+    } catch {
+        // Private browsing: no memory, so the next pick is random.
+    }
+}
+
+// Solo (and until the server says otherwise): never the same map as
+// last time in this browser.
 function pickMap() {
     try {
         const wanted = new URLSearchParams(location.search).get("map");
-        if (wanted && MAPS[wanted]) return wanted;
+
+        if (wanted && MAPS[wanted]) {
+            mapForced = true;
+            return wanted;
+        }
     } catch {
-        // No address to read (tests): pick at random.
+        // No address to read (tests).
     }
 
-    const names = Object.keys(MAPS);
-    return names[Math.floor(Math.random() * names.length)];
+    let last = null;
+
+    try {
+        last = localStorage.getItem(LAST_MAP_KEY);
+    } catch {
+        last = null;
+    }
+
+    const names = Object.keys(MAPS).filter((name) => name !== last);
+    const name = names[Math.floor(Math.random() * names.length)] ?? "space";
+
+    rememberMap(name);
+    return name;
 }
 
 let mapName = pickMap();
@@ -202,73 +236,67 @@ const parallaxMeshes = [];
 const parallaxGeometry = new THREE.PlaneGeometry(1, 1);
 parallaxGeometry.rotateX(-Math.PI / 2);
 
-function loadParallaxBackground() {
+// Load a map's three layers, then swap them in all at once (so a
+// change of map between rounds never shows a half-built background).
+// A newer request cancels an older one still loading.
+let mapLoadId = 0;
+
+// The map being loaded, if any.
+let loadingMap = null;
+
+function loadParallaxBackground(name = mapName) {
+    const id = ++mapLoadId;
+    loadingMap = name;
+    const layers = MAPS[name].layers;
+    const textures = new Array(layers.length);
+
     let loaded = 0;
     let failed = false;
 
-    PARALLAX_LAYERS.forEach((layer, index) => {
+    const discard = () => {
+        for (const texture of textures) texture?.dispose?.();
+    };
+
+    layers.forEach((layer, index) => {
         backgroundLoader.load(
             `./assets/${layer.file}`,
 
             (texture) => {
                 if (failed) return;
 
+                if (id !== mapLoadId) {
+                    texture.dispose?.();
+                    return;
+                }
+
                 texture.colorSpace = THREE.SRGBColorSpace;
                 texture.wrapS = THREE.RepeatWrapping;
                 texture.wrapT = THREE.RepeatWrapping;
                 texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
-                const material = new THREE.MeshBasicMaterial({
-                    map: texture,
-                    transparent: layer.transparent,
-                    opacity: layer.opacity,
-                    // Always behind the game, never hides it.
-                    depthWrite: false,
-                    fog: false,
-                    toneMapped: false
-                });
-
-                const mesh = new THREE.Mesh(parallaxGeometry, material);
-                mesh.name = `Parallax_${layer.file}`;
-                mesh.renderOrder = -10 + index;
-                mesh.frustumCulled = false;
-                mesh.userData.layer = layer;
-
-                scene.add(mesh);
-                parallaxMeshes.push(mesh);
-
+                textures[index] = texture;
                 loaded++;
 
-                // Once the opaque nebula is in, the flat background
-                // color is no longer needed.
-                if (loaded === PARALLAX_LAYERS.length) {
-                    console.log("Parallax background loaded.");
+                if (loaded === layers.length) {
+                    installMap(name, textures);
+                    console.log(`Parallax background loaded: ${MAPS[name].name}.`);
                 }
-
-                updateParallax();
             },
 
             undefined,
 
             () => {
-                if (failed) return;
+                if (failed || id !== mapLoadId) return;
 
                 failed = true;
+                discard();
+                loadingMap = null;
 
-                for (const mesh of parallaxMeshes) {
-                    scene.remove(mesh);
-                    mesh.material.map.dispose();
-                    mesh.material.dispose();
-                }
-
-                parallaxMeshes.length = 0;
-
-                // A map whose images are missing: fall back to deep
-                // space, then to the single original image.
-                if (mapName !== "space") {
-                    console.warn(`Map "${mapName}": ${layer.file} not found; using deep space instead.`);
-                    setMap("space");
-                    loadParallaxBackground();
+                // A map whose images are missing: deep space instead,
+                // then the single original image.
+                if (name !== "space") {
+                    console.warn(`Map "${name}": ${layer.file} not found; using deep space instead.`);
+                    loadParallaxBackground("space");
                     return;
                 }
 
@@ -278,13 +306,78 @@ function loadParallaxBackground() {
                     "blender/generate_background.py to create the layers."
                 );
 
+                setMap("space");
+                removeParallaxLayers();
                 loadLegacyBackground();
             }
         );
     });
 }
 
-// Switch to another map's scenery (before its layers load).
+function removeParallaxLayers() {
+    for (const mesh of parallaxMeshes) {
+        scene.remove(mesh);
+        mesh.material.map?.dispose?.();
+        mesh.material.dispose();
+    }
+
+    parallaxMeshes.length = 0;
+}
+
+// Show a map whose layers have loaded: replace the old layers, and
+// point every lens (warp bubbles, the black hole) at the new ones.
+function installMap(name, textures) {
+    loadingMap = null;
+    removeParallaxLayers();
+    setMap(name);
+
+    PARALLAX_LAYERS.forEach((layer, index) => {
+        const material = new THREE.MeshBasicMaterial({
+            map: textures[index],
+            transparent: layer.transparent,
+            opacity: layer.opacity,
+            // Always behind the game, never hides it.
+            depthWrite: false,
+            fog: false,
+            toneMapped: false
+        });
+
+        const mesh = new THREE.Mesh(parallaxGeometry, material);
+        mesh.name = `Parallax_${layer.file}`;
+        mesh.renderOrder = -10 + index;
+        mesh.frustumCulled = false;
+        mesh.userData.layer = layer;
+
+        scene.add(mesh);
+        parallaxMeshes.push(mesh);
+    });
+
+    retextureLenses();
+    updateParallax();
+}
+
+// Change map (online: the server's choice for the round). Does
+// nothing if it's already showing, or if the address chose one.
+function switchMap(name) {
+    if (!MAPS[name] || mapForced) return;
+    if (name === loadingMap) return;
+
+    rememberMap(name);
+
+    // Already showing it: just cancel any other map still loading.
+    if (name === mapName && parallaxMeshes.length > 0) {
+        if (loadingMap) {
+            mapLoadId++;
+            loadingMap = null;
+        }
+        return;
+    }
+
+    loadParallaxBackground(name);
+}
+
+// The scenery that goes with a map (its layers are swapped in by
+// installMap).
 function setMap(name) {
     mapName = name;
     currentMap = MAPS[name];
@@ -299,6 +392,27 @@ function setMap(name) {
         dust.visible = currentMap.dustOpacity > 0;
     }
     if (typeof orbitLimb !== "undefined" && orbitLimb) orbitLimb.visible = currentMap.limb;
+}
+
+// Every lens material (they redraw the background layers, bent), so a
+// new map can be swapped into them. Lenses add themselves here.
+const lensMaterials = new Set();
+
+function retextureLenses() {
+    const textures = PARALLAX_LAYERS.map((layer) =>
+        parallaxMeshes.find((mesh) => mesh.userData.layer === layer)?.material.map
+    );
+
+    for (const material of lensMaterials) {
+        const u = material.uniforms;
+
+        u.uNebula.value = textures[0];
+        u.uFar.value = textures[1];
+        u.uNear.value = textures[2];
+        u.uTile.value.set(...PARALLAX_LAYERS.map((l) => l.tile));
+        u.uFactor.value.set(...PARALLAX_LAYERS.map((l) => l.factor));
+        u.uOpacity.value.set(...PARALLAX_LAYERS.map((l) => l.opacity));
+    }
 }
 
 // Keep every layer centered on the camera, sized to the view, and
@@ -5203,6 +5317,8 @@ function createLens() {
         }
     });
 
+    lensMaterials.add(material);
+
     const lens = new THREE.Mesh(parallaxGeometry, material);
     lens.name = "GravitationalLens";
 
@@ -5453,6 +5569,7 @@ function createWarpLens() {
     mesh.visible = false;
 
     scene.add(mesh);
+    lensMaterials.add(material);
 
     const uniforms = material.uniforms;
 
@@ -5489,6 +5606,7 @@ function createWarpLens() {
         dispose() {
             scene.remove(mesh);
             material.dispose();
+            lensMaterials.delete(material);
         }
     };
 }
@@ -9934,6 +10052,9 @@ function enterOnlineWorld(welcome) {
     net.round = null;
     net.dead = false;
 
+    // The lobby's map for this round.
+    switchMap(welcome.round?.map);
+
     // A fresh start in the shared world (startGame calls
     // resetGame, which clears every solo object).
     startGame();
@@ -10754,6 +10875,9 @@ function onNetRound(round) {
     } else if (round.phase === "playing") {
         records.banner = null;
         renderRecordBanner();
+
+        // Each round has its own map (never the same twice running).
+        switchMap(round.map);
 
         // A new round: everything resets. The server sends the new
         // spawn point and world right after this.

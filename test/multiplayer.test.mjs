@@ -1125,6 +1125,38 @@ test("dropped and back: a pilot alone in a lobby returns to the same lobby, roun
     shutdownAll();
 });
 
+test("maps: each round's map differs from the last, is sent to everyone, and survives a restart", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA", { token: TOKEN });
+    const entry = [...server.env.LOBBY.objects.values()][0];
+    const lobby = entry.instance;
+
+    assert.ok(["space", "orbit"].includes(a.welcome.round.map), "in the welcome");
+
+    let previous = lobby.round.map;
+    for (let i = 0; i < 6; i++) {
+        lobby.startRound(lobby.round.n + 1, Date.now());
+        assert.notEqual(lobby.round.map, previous, "different every round");
+        previous = lobby.round.map;
+    }
+
+    await waitFor(() => a.rounds.some((r) => r.map === previous), 1000, "announced");
+
+    // Saved with the round: a restarted lobby carries on with it.
+    lobby.saveResume(Date.now());
+    a.ws.close();
+    await waitFor(() => entry.state.sockets.length === 0, 1000, "left");
+
+    entry.instance.stopTimer();
+    entry.instance = new server.mod.Lobby(entry.state, server.env);
+    await entry.state.ready;
+
+    const back = await rawClient(server, "ALPHA", { token: TOKEN, lobby: a.welcome.lobby });
+    assert.equal(back.welcome.round.map, previous, "same map after the restart");
+
+    shutdownAll();
+});
+
 test("lobby restart (a deploy): pilots who come back within two minutes carry on the same round with their scores", async () => {
     const server = await loadWorker();
 
@@ -1520,14 +1552,14 @@ test("refused requests: wrong version, not a WebSocket, other origins", async ()
     assert.equal((await server.fetch("http://game.test/api/health")).status, 200);
 });
 
-test("junk, floods and bad numbers never break the lobby", async () => {
+test("junk and bad numbers never break the lobby", async () => {
     const server = await loadWorker();
     const a = await rawClient(server, "ALPHA");
     const b = await rawClient(server, "BRAVO");
     quietLobby(server);
 
     const junk = [
-        "not json", "{", "null", "[]", "x".repeat(10_000),
+        "not json", "{", "null", "[]",
         JSON.stringify({ t: "s", l: 1, x: "NaN", z: 0, r: 0 }),
         JSON.stringify({ t: "s", l: 1, x: Infinity, z: 0, r: 0 }),
         JSON.stringify({ t: "f", w: 99, x: 0, z: 0, r: 0 }),
@@ -1536,9 +1568,8 @@ test("junk, floods and bad numbers never break the lobby", async () => {
     ];
 
     for (const m of junk) b.ws.send(m);
-    for (let i = 0; i < 500; i++) b.state(i, 0);
 
-    await sleep(1200);
+    await sleep(300);
 
     b.state(99999, -99999);
     await hold([[a, 1, 1]], 300);
@@ -1549,6 +1580,113 @@ test("junk, floods and bad numbers never break the lobby", async () => {
     assert.equal(bRow[1], 230, "x clamped to the world");
     assert.equal(bRow[2], -145, "z clamped to the world");
     assert.ok(!a.closed && !b.closed);
+
+    shutdownAll();
+});
+
+test("abuse: a flooding connection, or one sending an oversized message, is closed; others play on", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const c = await rawClient(server, "CHARLIE");
+    const lobby = quietLobby(server);
+
+    // A burst like the real game's (it never sends more than about 30
+    // a second) is fine.
+    for (let i = 0; i < 50; i++) a.state(1, 1);
+    await sleep(200);
+    assert.equal(a.closed, false, "a short burst is fine");
+
+    // Hundreds at once: closed.
+    for (let i = 0; i < 500; i++) {
+        try { b.state(i % 50, 0); } catch { break; }
+    }
+
+    await waitFor(() => b.closed, 2000, "flooder closed");
+
+    // One huge message: closed.
+    c.ws.send("x".repeat(10_000));
+    await waitFor(() => c.closed, 2000, "oversized closed");
+
+    await hold([[a, 1, 1]], 300);
+    assert.equal(a.closed, false);
+    assert.equal(lobby.liveSockets().length, 1, "only the honest pilot left");
+    assert.ok(a.snaps.length > 0);
+
+    shutdownAll();
+});
+
+test("at most 6 connections from one IP address per lobby", async () => {
+    const server = await loadWorker();
+    server.clientIp = "203.0.113.7";
+
+    const same = [];
+    for (let i = 0; i < 6; i++) same.push(await rawClient(server, `P${i}X`));
+
+    const lobby = server.lobbies()[0].instance;
+    assert.equal(lobby.liveSockets().length, 6);
+
+    // The seventh is turned away (and not sent off to fill another
+    // lobby).
+    const extra = rawClient(server, "EXTRA");
+    await assert.rejects(extra);
+    assert.equal(server.lobbies().length, 1, "no new lobby for it");
+
+    // Someone else is fine.
+    server.clientIp = "198.51.100.20";
+    const other = await rawClient(server, "OTHER");
+    assert.equal(other.welcome.lobby, same[0].welcome.lobby);
+
+    shutdownAll();
+});
+
+test("movement: a ship can't move faster than ships fly; a pilot far out of step is put back", async () => {
+    const server = await loadWorker({ MOVE_CHECK: "on" });
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+    const ship = shipOf(lobby, a);
+
+    const start = { x: ship.x, z: ship.z };
+
+    // An honest flight at full warp speed: followed exactly.
+    let x = start.x;
+    for (let i = 0; i < 10; i++) {
+        x += 40 * 0.05;
+        a.state(x, start.z);
+        await sleep(50);
+    }
+
+    assert.ok(Math.abs(ship.x - x) < 0.01, "honest movement accepted");
+
+    // A teleport across the map: only as far as a ship could have gone,
+    // and the pilot is told where they really are.
+    const before = a.you?.sp;
+    a.state(x + 150, start.z);
+    await sleep(80);
+
+    assert.ok(ship.x - x < 20, `moved only ${(ship.x - x).toFixed(1)} units`);
+    await waitFor(() => a.you?.sp && a.you.sp !== before && Math.abs(a.you.sp[0] - ship.x) < 1, 1000, "put back");
+
+    // Reported speed is capped too (other players' screens use it).
+    a.state(ship.x, start.z, 0, { vx: 80, vz: 0 });
+    await sleep(30);
+    assert.ok(ship.vx <= 45);
+
+    shutdownAll();
+});
+
+test("allowed origins: with ALLOWED_ORIGINS set, only those pages can connect", async () => {
+    const server = await loadWorker({ ALLOWED_ORIGINS: "https://amaxcon.com, http://localhost:8787" });
+
+    server.origin = "https://amaxcon.com";
+    const ok = await rawClient(server, "GOOD");
+    assert.ok(ok.welcome);
+
+    server.origin = "https://evil.example";
+    await assert.rejects(rawClient(server, "BAD"));
+
+    server.origin = null;
+    await assert.rejects(rawClient(server, "NOORIGIN"));
 
     shutdownAll();
 });

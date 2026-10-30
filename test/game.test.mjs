@@ -18,10 +18,11 @@ const games = [];
 
 // Load a fresh copy of game.js (and multiplayer.js) wired to the
 // stand-ins and to `server`.
-async function loadGame(server, { start = true, search = "", missingTextures = [] } = {}) {
+async function loadGame(server, { start = true, search = "", missingTextures = [], lastMap = null } = {}) {
     const dom = installDom(path.join(publicDir, "index.html"));
     location.search = search;
     globalThis.__missingTextures = missingTextures;
+    if (lastMap) localStorage.setItem("asteroidDefense.lastMap", lastMap);
 
     globalThis.WebSocket = makeBrowserWebSocket(server);
 
@@ -127,8 +128,8 @@ function serverShip(game) {
     return [...lobby.ships.values()].find((s) => s.id === id);
 }
 
-async function bootOnline() {
-    const server = await loadWorker();
+async function bootOnline(env = {}) {
+    const server = await loadWorker(env);
     const game = await loadGame(server);
 
     await waitFor(() => game.t.net.active, 3000, "online");
@@ -1307,14 +1308,124 @@ test("maps: ?map= chooses deep space or low orbit; orbit adds the atmosphere's e
     assert.equal(fallback.t.orbitLimb.visible, false);
     stopGames();
 
-    // No choice in the address: one of the two, at random.
-    const seen = new Set();
-    for (let i = 0; i < 20 && seen.size < 2; i++) {
-        const g = await loadGame(server);
-        seen.add(g.t.mapName);
+    // Solo, no choice in the address: never the same map as last time.
+    for (const [last, next] of [["space", "orbit"], ["orbit", "space"]]) {
+        const g = await loadGame(server, { lastMap: last });
+        await waitFor(() => g.t.parallaxMeshes.length === 3, 3000, "layers");
+
+        assert.equal(g.t.mapName, next, `after ${last}: ${next}`);
+        assert.equal(localStorage.getItem("asteroidDefense.lastMap"), next, "remembered");
         stopGames();
     }
-    assert.deepEqual([...seen].sort(), ["orbit", "space"], "both maps come up");
+});
+
+test("maps online: everyone gets the lobby's map, and each new round switches to a different one", async () => {
+    const game = await bootOnline();
+    const { t, server } = game;
+    const lobby = server.lobbies()[0].instance;
+
+    const first = lobby.round.map;
+    assert.ok(["space", "orbit"].includes(first));
+    assert.equal(t.net.round.map, first, "told the map");
+
+    await waitFor(async () => { await play(game, 50); return t.mapName === first && t.parallaxMeshes.length === 3; }, 3000, "showing the lobby's map");
+    assert.ok(t.parallaxMeshes.every((m) => t.MAPS[first].layers.includes(m.userData.layer)), "its layers");
+
+    for (let i = 0; i < 3; i++) {
+        const before = lobby.round.map;
+        lobby.startRound(lobby.round.n + 1, Date.now());
+        const after = lobby.round.map;
+
+        assert.notEqual(after, before, "never the same map twice running");
+
+        await waitFor(async () => { await play(game, 50); return t.mapName === after && t.parallaxMeshes.length === 3; }, 3000, "switched");
+        assert.ok(t.parallaxMeshes.every((m) => t.MAPS[after].layers.includes(m.userData.layer)), "new layers, old ones gone");
+        assert.equal(t.orbitLimb.visible, after === "orbit");
+    }
+
+    stopGames();
+
+    // ?map= keeps that map whatever the server picks.
+    const server2 = await loadWorker();
+    const forced = await loadGame(server2, { search: "?map=space" });
+    await waitFor(() => forced.t.net.active, 3000, "online");
+    const lobby2 = server2.lobbies()[0].instance;
+
+    for (let i = 0; i < 2; i++) {
+        lobby2.startRound(lobby2.round.n + 1, Date.now());
+        await play(forced, 200);
+        assert.equal(forced.t.mapName, "space");
+    }
+
+    stopGames();
+});
+
+test("movement check: honest flying at full boost in a warp bubble is never corrected", async () => {
+    const game = await bootOnline({ MOVE_CHECK: "on" });
+    const { t, dom, server } = game;
+
+    quietLobby(server);
+    t.activateWarp();
+
+    let corrections = 0;
+    const ship = serverShip(game);
+    const original = Object.getOwnPropertyDescriptor(ship, "spawnMoved");
+    let value = ship.spawnMoved;
+    Object.defineProperty(ship, "spawnMoved", {
+        get: () => value,
+        set: (v) => { if (v) corrections++; value = v; },
+        configurable: true
+    });
+
+    const from = { x: t.player.position.x, z: t.player.position.z };
+    let travelled = 0;
+    let last = { ...from };
+
+    dom.key("keydown", "KeyW");
+    dom.key("keydown", "ShiftLeft");
+
+    // Zig-zag about at top speed.
+    let turn = 0;
+    await play(game, 2500, () => {
+        turn += 0.05;
+        t.player.aim.set(t.player.position.x + Math.sin(turn) * 50, 0, t.player.position.z + Math.cos(turn) * 50);
+        travelled += Math.hypot(t.player.position.x - last.x, t.player.position.z - last.z);
+        last = { x: t.player.position.x, z: t.player.position.z };
+    });
+
+    assert.ok(travelled > 40, `flew ${travelled.toFixed(0)} units`);
+
+    dom.key("keyup", "KeyW");
+    dom.key("keyup", "ShiftLeft");
+
+    if (original) Object.defineProperty(ship, "spawnMoved", original);
+
+    assert.equal(corrections, 0, "never put back");
+    assert.ok(Math.hypot(ship.x - t.player.position.x, ship.z - t.player.position.z) < 4, "server keeps up");
+
+    stopGames();
+});
+
+test("security headers: the import map's hash matches, and the page loads no scripts from other sites", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { createHash } = await import("node:crypto");
+
+    const html = await readFile(path.join(publicDir, "index.html"), "utf8");
+    const headers = await readFile(path.join(publicDir, "_headers"), "utf8");
+
+    const map = html.match(/<script type="importmap">([\s\S]*?)<\/script>/);
+    assert.ok(map, "import map found");
+
+    const hash = createHash("sha256").update(map[1]).digest("base64");
+    assert.ok(headers.includes(`'sha256-${hash}'`), "public/_headers allows this exact import map");
+
+    const imports = JSON.parse(map[1]).imports;
+    for (const [name, url] of Object.entries(imports)) {
+        assert.ok(url.startsWith("./"), `${name} is served from this site (${url})`);
+    }
+
+    assert.ok(!/<script[^>]+src="https?:/i.test(html), "no scripts from other sites");
+    assert.match(headers, /frame-ancestors 'none'/);
 });
 
 test("mouse controls are unchanged: drag steers toward the cursor, click fires", async () => {

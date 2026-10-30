@@ -116,8 +116,10 @@ straight away.
 
 ### Maps
 
-Each time the game loads it picks one of two maps at random. Maps only change
-the scenery; the game plays the same.
+There are two maps. Online, the server picks the map for each round, never
+the same one twice in a row, and everyone in the lobby sees the same map; it
+switches when the next round starts. In a solo game the browser alternates
+between them. Maps only change the scenery; the game plays the same.
 
 - **Deep space:** the nebula and star layers.
 - **Low orbit:** looking straight down from orbit on a chain of tropical
@@ -128,8 +130,8 @@ the scenery; the game plays the same.
   the playfield, the planet's edge slides further into view. Nothing star-like
   appears over the sea or land.
 
-Add `?map=space` or `?map=orbit` to the address to choose one (handy for
-testing). The orbit map's images are `public/assets/bg_orbit_ground.jpg`,
+Add `?map=space` or `?map=orbit` to the address to always show that one,
+whatever the server picks (handy for testing). The orbit map's images are `public/assets/bg_orbit_ground.jpg`,
 `bg_orbit_clouds.png` and `bg_orbit_haze.png`, made by
 `blender/generate_islands.py` (plain Python with numpy and Pillow; change
 `SEED` in it for a different chain of islands). If they're missing, the game
@@ -363,6 +365,73 @@ Cloudflare account, the models or a browser.
   - the all-time leaderboard, and the mouse controls
 
 Step 6 is the check against Cloudflare's real runtime and real rendering.
+
+## Security
+
+What's already protected, in the code:
+
+- **The server decides everything that counts:** hits, damage, scores, kills,
+  weapon unlocks, the cloak, rates of fire and the all-time list. A modified
+  browser can't award itself points.
+- **Movement is checked:** the server won't believe a ship moving faster than
+  ships can fly (40.5 units a second, boosted in a warp bubble), and puts a
+  pilot back if they get far out of step.
+- **Floods are cut off:** a connection that keeps sending messages faster than
+  the game ever does, or sends an oversized one, is closed (every message
+  counts toward Cloudflare's daily allowance, even ignored ones).
+- **At most 6 connections per IP address per lobby.**
+- **Only the game's own pages can connect:** `ALLOWED_ORIGINS` in
+  `wrangler.jsonc` lists amaxcon.com and `wrangler dev` on this computer. To
+  play from another device on your home network during `wrangler dev`, add its
+  address (e.g. `http://192.168.1.20:8787`).
+- **Security headers** (`public/_headers`): the page can only run scripts and
+  load files from this site, other sites can't put the game in a frame, and
+  the usual `nosniff` / referrer settings.
+- **Three.js is served from this site** (`public/vendor/three`, r170), not a
+  CDN.
+
+### One thing to set up in the Cloudflare dashboard
+
+Add a rate limiting rule so one address can't open connections endlessly:
+
+1. Open the dashboard, select the **amaxcon.com** zone, then **Security** →
+   **WAF** (or **Security rules**) → **Rate limiting rules** → **Create rule**.
+2. Name it `Game connections`.
+3. **If incoming requests match:** Field *URI Path*, operator *equals*, value
+   `/api/ws`.
+4. **With the same characteristics:** *IP*.
+5. **When rate exceeds:** 20 requests per 10 seconds.
+6. **Then take action:** *Block*, for 10 seconds (the shortest choice is fine).
+7. Deploy the rule.
+
+A real player reconnects at most a few times a minute, so this never gets in
+their way.
+
+### If you edit the import map in index.html
+
+`public/_headers` allows the page's one inline script (the import map) by its
+SHA-256 hash, so after changing it, recompute the hash and put it in the
+`sha256-...` part of the Content Security Policy:
+
+```
+node -e "const s=require('fs').readFileSync('public/index.html','utf8');const m=s.match(/<script type=\"importmap\">([\s\S]*?)<\/script>/);console.log(require('crypto').createHash('sha256').update(m[1]).digest('base64'))"
+```
+
+`npm test` checks the two match.
+
+### Checking the Three.js files
+
+To confirm `public/vendor/three` matches the official package:
+
+```
+npm pack three@0.170.0 && tar xzf three-0.170.0.tgz
+cmp package/build/three.module.js public/vendor/three/build/three.module.js
+cmp package/examples/jsm/loaders/GLTFLoader.js public/vendor/three/examples/jsm/loaders/GLTFLoader.js
+cmp package/examples/jsm/utils/BufferGeometryUtils.js public/vendor/three/examples/jsm/utils/BufferGeometryUtils.js
+rm -rf package three-0.170.0.tgz
+```
+
+No output from the `cmp` lines means they're identical.
 
 ## Costs and limits
 
