@@ -766,6 +766,37 @@ test("the rogue asteroid is shared and destroys what's in its path", async () =>
     shutdownAll();
 });
 
+test("the rogue asteroid destroys a ship it hits outright; the pilot respawns", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+
+    await hold([[a, 0, 0]], 150);
+    unshield(lobby);
+
+    const ship = shipOf(lobby, a);
+    assert.equal(ship.hull, 3, "full hull");
+
+    // Sweep it straight across the ship.
+    const now = Date.now();
+    lobby.rogueSweep({ x: -10, z: 0, dx: 1, dz: 0, destroyed: 0 }, 20, now);
+
+    assert.equal(ship.alive, false, "destroyed in one hit");
+    assert.equal(ship.hull, 0);
+
+    await waitFor(() => a.eventsOf("sk").length === 1, 1000, "destroyed event");
+    assert.equal(a.eventsOf("sk")[0][5], "rogue", "the rogue asteroid did it");
+
+    await waitFor(() => a.eventsOf("sr").length === 1, 5000, "respawned");
+    assert.equal(ship.hull, 3, "back with a full hull");
+
+    // The spawn shield and the warp bubble still protect a ship.
+    lobby.rogueSweep({ x: -10, z: ship.z, dx: 1, dz: 0, destroyed: 0 }, 40, Date.now());
+    assert.equal(ship.alive, true, "spawn shield");
+
+    shutdownAll();
+});
+
 // ---- Rounds and the leaderboard ----------------------------------------
 
 test("round end: results ranked by score; then a fresh round resets scores", async () => {

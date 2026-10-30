@@ -3959,15 +3959,16 @@ function rogueSweep(x, z, step) {
         rockets.splice(i, 1);
     }
 
-    // The ship takes one hit (damagePlayer's cooldown stops a
-    // single pass from counting twice). The warp bubble protects it.
+    // A direct hit destroys the ship outright. The warp bubble
+    // protects it.
     if (
         ROGUE_CONFIG.damagesPlayer &&
         player.mesh &&
+        player.mesh.visible &&
         !warp.active &&
         touches(player.position.x, player.position.z, player.radius)
     ) {
-        damagePlayer();
+        damagePlayer(state.lives, "rogue");
     }
 }
 
@@ -8246,13 +8247,16 @@ function circlesOverlap(a, b, radiusA, radiusB) {
     return dx * dx + dz * dz < r * r;
 }
 
-function damagePlayer() {
-    if (state.damageCooldown > 0 || !state.running) return;
+// amount: hull points lost (the rogue asteroid takes them all, and
+// ignores the short cooldown between hits).
+function damagePlayer(amount = 1, cause = "") {
+    if (!state.running) return;
+    if (state.damageCooldown > 0 && cause !== "rogue") return;
 
     // Online, the server decides damage (see ONLINE WORLD).
     if (net.active) return;
 
-    state.lives--;
+    state.lives = Math.max(0, state.lives - amount);
     state.damageCooldown = 1.5;
 
     showDamageFeedback();
@@ -8268,6 +8272,8 @@ function damagePlayer() {
         setRetroThrustersActive(false);
 
         endGame(1300);
+
+        if (cause === "rogue") $("message").textContent = "HIT BY THE ROGUE ASTEROID";
     } else {
         $("message").textContent = "WARNING: HULL DAMAGED";
     }
@@ -9268,7 +9274,7 @@ function placeNetShip(x, z) {
     if (far) updateCameraRig(0, true);
 }
 
-function netShipDestroyed(killerId) {
+function netShipDestroyed(killerId, cause = "") {
     net.dead = true;
     net.respawnAt = performance.now() + 3000;
 
@@ -9283,7 +9289,9 @@ function netShipDestroyed(killerId) {
 
     net.deathText = killerId
         ? `DESTROYED BY ${netName(killerId)}`
-        : "SHIP DESTROYED";
+        : cause === "rogue"
+            ? "HIT BY THE ROGUE ASTEROID"
+            : "SHIP DESTROYED";
 
     updateHUD();
 }
@@ -9715,9 +9723,9 @@ function applyNetEvent(e, lag) {
         }
 
         case "sk": {
-            // [ship, killer, x, z]
+            // [ship, killer, x, z, cause]
             if (netSelf(e[1])) {
-                netShipDestroyed(e[2] || null);
+                netShipDestroyed(e[2] || null, e[5] || "");
             } else {
                 createShipExplosion(point(e[3], e[4]), multiplayer?.designOf(e[1]) ?? 0);
 

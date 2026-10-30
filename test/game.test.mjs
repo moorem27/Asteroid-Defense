@@ -1174,6 +1174,26 @@ test("ships (online): your design goes to the server; the server shares design a
     stopGames();
 });
 
+test("solo: a hit from the rogue asteroid destroys the ship outright", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+    assert.equal(t.state.lives, 3);
+
+    t.damagePlayer(t.state.lives, "rogue");
+
+    assert.equal(t.state.lives, 0);
+    assert.equal(t.state.running, false);
+    assert.equal(t.shipExplosions.length, 1, "explosion");
+    assert.equal(dom.el("message").textContent, "HIT BY THE ROGUE ASTEROID");
+
+    stopGames();
+});
+
 test("mouse controls are unchanged: drag steers toward the cursor, click fires", async () => {
     const game = await soloGame();
     const { t } = game;

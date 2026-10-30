@@ -2170,10 +2170,12 @@ export class Lobby extends DurableObject {
             now >= ship.warpUntil;
     }
 
-    damageShip(ship, amount, attacker, now) {
+    // cause: "rogue" for the rogue asteroid (it ignores the short
+    // cooldown between hits, and players are told what got them).
+    damageShip(ship, amount, attacker, now, cause = null) {
         if (!ship.alive) return;
         if (now < ship.shieldUntil || now < ship.warpUntil) return;
-        if (now < ship.hitCooldownUntil) return;
+        if (now < ship.hitCooldownUntil && cause !== "rogue") return;
 
         ship.hull = Math.max(0, ship.hull - amount);
         ship.hitCooldownUntil = now + SHIP.hitCooldownMs;
@@ -2212,7 +2214,7 @@ export class Lobby extends DurableObject {
             this.addScore(killer, POINTS.shipKill);
         }
 
-        this.event(["sk", ship.id, killer ? killer.id : "", round2(p.x), round2(p.z)]);
+        this.event(["sk", ship.id, killer ? killer.id : "", round2(p.x), round2(p.z), cause ?? ""]);
     }
 
     respawn(ship, now) {
@@ -2455,8 +2457,10 @@ export class Lobby extends DurableObject {
         for (const s of this.ships.values()) {
             if (!this.isPresent(s, now)) continue;
 
+            // A direct hit destroys the ship outright (the spawn shield
+            // and the warp bubble still protect it).
             const p = this.shipPosition(s, now);
-            if (touches(p.x, p.z, SHIP.radius)) this.damageShip(s, 1, null, now);
+            if (touches(p.x, p.z, SHIP.radius)) this.damageShip(s, s.hull, null, now, "rogue");
         }
     }
 
