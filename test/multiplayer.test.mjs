@@ -1094,6 +1094,75 @@ test("same browser again: works in a full lobby, and a lone player keeps the rou
     shutdownAll();
 });
 
+test("dropped and back: a pilot alone in a lobby returns to the same lobby, round, score and place", async () => {
+    const server = await loadWorker();
+
+    const me = await rawClient(server, "ME", { token: TOKEN });
+    const lobbyId = me.welcome.lobby;
+    const lobby = server.lobbies()[0].instance;
+    const round = lobby.round.startedAt;
+
+    const ship = shipOf(lobby, me);
+    ship.score = 23456;
+    ship.kills = 3;
+    await hold([[me, 30, -20]], 150);
+
+    // The phone locks: the connection drops, and the lobby is empty.
+    me.ws.close();
+    await waitFor(() => server.lobbies()[0].state.sockets.length === 0, 1000, "left");
+    await sleep(200);
+
+    const back = await rawClient(server, "ME", { token: TOKEN, lobby: lobbyId });
+
+    assert.equal(back.welcome.lobby, lobbyId, "same lobby");
+    assert.equal(lobby.round.startedAt, round, "same round");
+
+    const again = shipOf(lobby, back);
+    assert.equal(again.score, 23456, "score kept");
+    assert.equal(again.kills, 3);
+    assert.ok(Math.hypot(again.x - 30, again.z + 20) < 12, "back about where it was");
+
+    shutdownAll();
+});
+
+test("lobby restart (a deploy): pilots who come back within two minutes carry on the same round with their scores", async () => {
+    const server = await loadWorker();
+
+    const a = await rawClient(server, "ALPHA", { token: TOKEN });
+    const b = await rawClient(server, "BRAVO", { token: "f0e1d2c3b4a5968778695a4b3c2d1e0f" });
+    const lobbyId = a.welcome.lobby;
+    const entry = [...server.env.LOBBY.objects.values()][0];
+    const round = entry.instance.round;
+
+    shipOf(entry.instance, a).score = 31000;
+    shipOf(entry.instance, b).score = 9000;
+    entry.instance.saveResume(Date.now());
+
+    // Everyone is disconnected and the lobby starts over with nothing
+    // in memory.
+    a.ws.close();
+    b.ws.close();
+    await waitFor(() => entry.state.sockets.length === 0, 1000, "disconnected");
+
+    entry.instance.stopTimer();
+    entry.instance = new server.mod.Lobby(entry.state, server.env);
+    await entry.state.ready;
+
+    const a2 = await rawClient(server, "ALPHA", { token: TOKEN, lobby: lobbyId });
+    const b2 = await rawClient(server, "BRAVO", { token: "f0e1d2c3b4a5968778695a4b3c2d1e0f", lobby: lobbyId });
+
+    const lobby = entry.instance;
+    assert.equal(a2.welcome.lobby, lobbyId);
+    assert.equal(b2.welcome.lobby, lobbyId);
+    assert.equal(lobby.round.n, round.n, "same round");
+    assert.equal(lobby.round.endsAt, round.endsAt, "same clock");
+    assert.equal(shipOf(lobby, a2).score, 31000);
+    assert.equal(shipOf(lobby, b2).score, 9000);
+    assert.equal(a2.you.sc, 31000, "told their score");
+
+    shutdownAll();
+});
+
 test("same browser back later: joins where the players are, not its old empty lobby", async () => {
     const server = await loadWorker();
 
@@ -1102,6 +1171,16 @@ test("same browser back later: joins where the players are, not its old empty lo
 
     me.ws.close();
     await waitFor(() => server.lobbies()[0].state.sockets.length === 0, 1000, "left");
+
+    // Much later: the empty lobby has been forgotten.
+    const lobby = server.lobbies()[0].instance;
+    lobby.emptiedAt -= 10 * 60_000;
+    if (lobby.resume) lobby.resume.savedAt -= 10 * 60_000;
+
+    for (const e of server.env.MATCHMAKER.objects.values()) {
+        for (const l of e.instance.lobbies.values()) l.updatedAt -= 10 * 60_000;
+    }
+
     await waitFor(async () => (await server.matchmakerStats()).length === 0, 1000, "lobby forgotten");
 
     const other = await rawClient(server, "OTHER");

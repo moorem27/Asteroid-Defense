@@ -600,7 +600,11 @@ test("connection lost mid-game: carries on solo, then rejoins", async () => {
     const p = t.player.position;
     lobby.spawnAsteroid(p.x + 10, p.z, 1.0, 0, 0);
 
+    serverShip(game).score = 4200;
+    serverShip(game).dirty = true;
+
     await play(game, 200);
+    assert.equal(t.state.score, 4200);
 
     server.down = true;
 
@@ -624,6 +628,11 @@ test("connection lost mid-game: carries on solo, then rejoins", async () => {
     server.down = false;
 
     await waitFor(async () => { await play(game, 50); return t.net.active; }, 8000, "rejoined");
+    await play(game, 100);
+
+    // Back in the same round, and it says so; the score survived.
+    assert.match(dom.el("message").textContent, /RECONNECTED · ROUND 1 · SCORE KEPT/);
+    assert.equal(t.state.score, 4200, "score kept");
 
     stopGames();
 });

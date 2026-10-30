@@ -9678,6 +9678,10 @@ function onNetOnline(welcome) {
 }
 
 function enterOnlineWorld(welcome) {
+    // Back in the round we were in (the connection dropped and came
+    // back): say so, rather than looking like a fresh start.
+    const rejoined = Boolean(net.lastRoundEnd) && welcome.round?.endsAt === net.lastRoundEnd;
+
     net.pendingWelcome = null;
     net.active = true;
     net.round = null;
@@ -9700,9 +9704,12 @@ function enterOnlineWorld(welcome) {
         if (player.mesh) player.mesh.visible = false;
         showRoundResults();
     } else {
-        $("message").textContent =
-            `JOINED LOBBY · ROUND ${round?.n ?? 1} · TOP SCORE WINS`;
+        $("message").textContent = rejoined
+            ? `RECONNECTED · ROUND ${round?.n ?? 1} · SCORE KEPT`
+            : `JOINED LOBBY · ROUND ${round?.n ?? 1} · TOP SCORE WINS`;
     }
+
+    net.lastRoundEnd = round?.endsAt ?? 0;
 
     updateRoundHUD();
 }
@@ -10481,6 +10488,7 @@ function onNetRound(round) {
     if (!net.active) return;
 
     net.round = round;
+    net.lastRoundEnd = round.endsAt ?? 0;
 
     // A live NEW RECORD ends with the round (it's official once the
     // results arrive, or not at all).

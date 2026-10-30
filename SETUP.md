@@ -128,6 +128,16 @@ shimmering blue ghost. The cloak drops when the ship is destroyed, and locks
 again at the start of every round. The server enforces all of this
 (`public/ranks.js` holds the numbers).
 
+### Dropped connections
+
+If a pilot's connection drops (a phone locking, switching apps, a Wi-Fi blip,
+or a deploy restarting the server), the game carries on solo and rejoins as
+soon as it can. Coming back within two minutes puts them in the same lobby and
+round with their score, about where they were, even if they were the only one
+playing; the game shows RECONNECTED · SCORE KEPT. To make that survive the
+server restarting, each lobby saves its round and scores every 10 seconds
+while people are playing.
+
 ### One pilot per browser
 
 Each browser is one pilot. Reloading the page, or opening the game in another
@@ -346,6 +356,8 @@ numbers. Things to know:
 - **Duration:** a lobby runs its 30-per-second simulation the whole time
   anyone is connected, so it counts toward duration for as long as it has
   players. An empty lobby stops.
+- **Storage:** each lobby saves its round every 10 seconds while in play
+  (one or two rows written each time; the Free plan allows 100,000 a day).
 - **Free plan limits:** going over a daily limit makes further requests fail
   until it resets at midnight UTC. Players simply drop to OFFLINE MODE until
   then.

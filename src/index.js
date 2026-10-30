@@ -94,6 +94,14 @@ const INTERMISSION_MS = 22_000;
 
 const HEARTBEAT_MS = 30_000;
 const LOBBY_EXPIRY_MS = 120_000;
+
+// A pilot whose connection drops (a phone locking, an app switch, a
+// Wi-Fi blip, a deploy) comes back to the same lobby, round and score
+// within this long, even if they were the only one there. The round
+// and everyone's scores are saved every RESUME_SAVE_MS while playing
+// (and when the lobby empties), so this survives the lobby restarting.
+const RESUME_GRACE_MS = 120_000;
+const RESUME_SAVE_MS = 10_000;
 const RESERVATION_MS = 15_000;
 const STALE_MS = 120_000;
 
@@ -579,16 +587,14 @@ export class Matchmaker extends DurableObject {
 
         const now = Date.now();
 
-        if (!(count > 0)) {
-            this.lobbies.delete(lobbyId);
-        } else {
-            this.lobbies.set(lobbyId, {
-                count: Math.min(MAX_PLAYERS, Math.floor(count)),
-                reserved: 0,
-                reservedAt: now,
-                updatedAt: now
-            });
-        }
+        // An empty lobby stays listed (count 0) until it expires, so a
+        // pilot whose connection dropped can go back to it.
+        this.lobbies.set(lobbyId, {
+            count: count > 0 ? Math.min(MAX_PLAYERS, Math.floor(count)) : 0,
+            reserved: 0,
+            reservedAt: now,
+            updatedAt: now
+        });
 
         this.prune(now);
         await this.save();
@@ -671,6 +677,118 @@ export class Lobby extends DurableObject {
 
         this.resetWorld();
         this.round = null;
+
+        // When the last pilot left (see RESUME_GRACE_MS), and the saved
+        // round from before a restart, if any.
+        this.emptiedAt = 0;
+        this.resume = null;
+        this.lastResumeSave = 0;
+
+        ctx.blockConcurrencyWhile(async () => {
+            try {
+                this.resume = (await ctx.storage.get("resume")) ?? null;
+            } catch {
+                this.resume = null;
+            }
+        });
+    }
+
+    // ---------------------------------------------------------
+    // KEEPING THE ROUND THROUGH DROPPED CONNECTIONS
+    // ---------------------------------------------------------
+
+    // Save the round and every pilot's score (connected or recently
+    // departed), so the lobby can carry on after a restart.
+    saveResume(now) {
+        if (!this.round || this.round.phase !== "playing") return;
+
+        this.lastResumeSave = now;
+
+        const scores = [];
+
+        for (const [token, d] of this.departed) {
+            scores.push([token, d.score, d.kills, d.deaths, d.nextWarp, d.x ?? null, d.z ?? null]);
+        }
+
+        for (const s of this.ships.values()) {
+            if (s.token) scores.push([s.token, s.score, s.kills, s.deaths, s.nextWarp, round2(s.x), round2(s.z)]);
+        }
+
+        const resume = {
+            savedAt: now,
+            round: { n: this.round.n, startedAt: this.round.startedAt, endsAt: this.round.endsAt },
+            scores
+        };
+
+        this.resume = resume;
+        this.ctx.storage.put("resume", resume).catch(() => {});
+    }
+
+    // A round to carry on with: this one, if the lobby emptied only a
+    // moment ago, or the saved one after a restart. Returns true if
+    // there was one.
+    resumeRound(now) {
+        const live = this.round && this.round.phase === "playing" && now < this.round.endsAt;
+
+        if (live && this.emptiedAt && now - this.emptiedAt < RESUME_GRACE_MS) {
+            return true;
+        }
+
+        const saved = this.resume;
+
+        if (
+            !saved?.round ||
+            now - saved.savedAt > RESUME_GRACE_MS ||
+            now >= saved.round.endsAt
+        ) {
+            return false;
+        }
+
+        this.resetWorld();
+        this.departed.clear();
+
+        this.round = {
+            n: saved.round.n,
+            phase: "playing",
+            startedAt: saved.round.startedAt,
+            endsAt: saved.round.endsAt,
+            nextAt: 0,
+            results: null
+        };
+
+        for (const [token, score, kills, deaths, nextWarp, x, z] of saved.scores ?? []) {
+            if (typeof token !== "string") continue;
+
+            this.departed.set(token, {
+                round: saved.round.n,
+                score: Number(score) || 0,
+                kills: Number(kills) || 0,
+                deaths: Number(deaths) || 0,
+                nextWarp: Number(nextWarp) || WARP.scoreInterval,
+                x: Number.isFinite(x) ? x : null,
+                z: Number.isFinite(z) ? z : null
+            });
+        }
+
+        this.scheduleUfo(now);
+        return true;
+    }
+
+    // Same player back in the same round: their score (and roughly
+    // where they were). Returns their old position, or null.
+    restoreDeparted(ship) {
+        const previous = ship.token ? this.departed.get(ship.token) : null;
+        if (!previous || previous.round !== this.round?.n) return null;
+
+        ship.score = previous.score;
+        ship.kills = previous.kills;
+        ship.deaths = previous.deaths;
+        ship.nextWarp = previous.nextWarp;
+        this.departed.delete(ship.token);
+
+        return Number.isFinite(previous.x) && Number.isFinite(previous.z)
+            ? { x: previous.x, z: previous.z }
+            : null;
     }
 
     // ---------------------------------------------------------
@@ -733,18 +851,25 @@ export class Lobby extends DurableObject {
 
         const now = Date.now();
 
-        // First player into an empty lobby: a fresh world and round.
-        // (Not when the only player just reconnected.)
+        // First player into an empty lobby: a fresh world and round,
+        // unless pilots were here a moment ago (or before a restart):
+        // then the same round carries on, scores and all. (Not when the
+        // only player just reconnected.)
         if (sockets.length === 0 && !replacedAny) {
-            this.resetWorld();
-            this.departed.clear();
-            this.round = null;
             this.ships.clear();
+
+            if (!this.resumeRound(now)) {
+                this.resetWorld();
+                this.departed.clear();
+                this.round = null;
+            }
         }
 
-        if (!this.round) {
+        if (!this.round && !this.resumeRound(now)) {
             this.startRound(1, now, false);
         }
+
+        this.emptiedAt = 0;
 
         const name = sanitizeName(url.searchParams.get("name"));
 
@@ -776,20 +901,16 @@ export class Lobby extends DurableObject {
 
         const ship = this.newShip({ id, name, color, token }, now);
 
-        // Same player back in the same round: restore their score.
-        const previous = token ? this.departed.get(token) : null;
+        // Same player back in the same round: restore their score, and
+        // put them back about where they were.
+        const wasAt = this.restoreDeparted(ship);
 
-        if (previous && previous.round === this.round.n) {
-            ship.score = previous.score;
-            ship.kills = previous.kills;
-            ship.deaths = previous.deaths;
-            ship.nextWarp = previous.nextWarp;
-            this.departed.delete(token);
-        }
-
-        // Start near other pilots, so the lobby feels like a lobby.
-        const anchor = this.randomPresentShip();
-        const spawn = this.chooseSpawn(anchor?.x ?? 0, anchor?.z ?? 0, now);
+        // Otherwise start near other pilots, so the lobby feels like a
+        // lobby.
+        const anchor = wasAt ?? this.randomPresentShip();
+        const spawn = wasAt && this.isClearSpot(wasAt.x, wasAt.z, now)
+            ? wasAt
+            : this.chooseSpawn(anchor?.x ?? 0, anchor?.z ?? 0, now);
 
         ship.x = spawn.x;
         ship.z = spawn.z;
@@ -920,7 +1041,9 @@ export class Lobby extends DurableObject {
                 score: ship.score,
                 kills: ship.kills,
                 deaths: ship.deaths,
-                nextWarp: ship.nextWarp
+                nextWarp: ship.nextWarp,
+                x: round2(ship.x),
+                z: round2(ship.z)
             });
         }
 
@@ -943,6 +1066,10 @@ export class Lobby extends DurableObject {
 
         if (remaining.length === 0) {
             this.stopTimer();
+
+            // Keep the round for anyone coming straight back.
+            this.emptiedAt = Date.now();
+            this.saveResume(this.emptiedAt);
         }
     }
 
@@ -973,9 +1100,10 @@ export class Lobby extends DurableObject {
 
             const now = Date.now();
 
-            if (!this.round) this.startRound(1, now, false);
+            if (!this.round && !this.resumeRound(now)) this.startRound(1, now, false);
 
             ship = this.newShip(info, now);
+            this.restoreDeparted(ship);
             this.ships.set(ws, ship);
         }
 
@@ -1303,6 +1431,8 @@ export class Lobby extends DurableObject {
             }
 
             this.recordShipHistory(now);
+
+            if (now - this.lastResumeSave > RESUME_SAVE_MS) this.saveResume(now);
         } catch (error) {
             // Keep the lobby alive; the next step starts clean.
             console.error("Simulation error:", error);
@@ -2423,6 +2553,22 @@ export class Lobby extends DurableObject {
 
         // A fresh start: no history from where it was before.
         if (ship.trail) ship.trail.length = 0;
+    }
+
+    // Nothing dangerous right here (for putting a returning pilot back
+    // where they were).
+    isClearSpot(x, z, now) {
+        if (Math.abs(x) > HALF_W - 4 || Math.abs(z) > HALF_H - 4) return false;
+
+        for (const a of this.asteroids) if (Math.hypot(a.x - x, a.z - z) < a.radius + 4) return false;
+        for (const m of this.mines) if (Math.hypot(m.x - x, m.z - z) < 5) return false;
+
+        if (this.ufo?.h) {
+            const u = ufoState(this.ufo, now);
+            if (u.phase !== "gone" && Math.hypot(u.x - x, u.z - z) < UFO.hostileRadius + 6) return false;
+        }
+
+        return true;
     }
 
     chooseSpawn(nearX, nearZ, now, self = null) {
