@@ -235,13 +235,22 @@ export class Multiplayer {
         let sent = false;
 
         this.guard(() => {
-            sent = this.send({
+            const shot = {
                 t: "f",
                 w: weapon,
                 x: round2(x),
                 z: round2(z),
                 r: round2(r)
-            });
+            };
+
+            // The server time of the picture this pilot is looking at
+            // (other ships are drawn renderDelay() in the past), so the
+            // server can judge the shot against where they saw the
+            // target (LAG in src/index.js).
+            const viewedAt = this.viewServerTime();
+            if (viewedAt !== null) shot.vt = Math.round(viewedAt);
+
+            sent = this.send(shot);
         });
 
         return sent;
@@ -635,6 +644,15 @@ export class Multiplayer {
             : this.jitterMs + (late - this.jitterMs) * (late > this.jitterMs ? 0.2 : 0.02);
 
         return t;
+    }
+
+    // The server time of the moment other ships are being drawn at, or
+    // null before the clock is known. (Snapshot times are server times
+    // minus clockOffset; ships are drawn renderDelay() behind now.)
+    viewServerTime() {
+        if (this.clockOffset === null || this.clockOffset === undefined) return null;
+
+        return now() - this.renderDelay() + this.clockOffset;
     }
 
     // How far in the past other ships are drawn (ms).

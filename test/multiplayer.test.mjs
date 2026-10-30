@@ -1688,6 +1688,61 @@ test("client: a ship inside a warp bubble is flagged (so the radar leaves it off
     shutdownAll();
 });
 
+test("lag compensation: shots are judged against where the shooter saw the target (up to 200 ms back)", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    await hold([[a, 0, 0], [b, 8, 10]], 200);
+    lobby.stopTimer();
+
+    const shipA = shipOf(lobby, a);
+    const shipB = shipOf(lobby, b);
+
+    // B is at (8, 10) now; A fires straight up the z axis from (0, 0),
+    // where B was a moment ago.
+    const shoot = (trail, vt) => {
+        const now = Date.now();
+
+        lobby.bullets.length = 0;
+        unshield(lobby);
+        shipA.lastFire = [0, 0, 0];
+        shipB.hitCooldownUntil = 0;
+        shipB.hull = 3;
+        shipB.x = 8; shipB.z = 10; shipB.vx = 0; shipB.vz = 0;
+        shipB.stateAt = now;
+        shipB.trail = trail.map(([dt, x, z]) => [now - dt, x, z]);
+
+        const shot = { w: 0, x: 0, z: 1.1, r: 0 };
+        if (vt !== undefined) shot.vt = now - vt;
+
+        lobby.onFire(shipA, shot, now);
+        for (let i = 0; i < 4; i++) lobby.updateBullets(0.1, now);
+
+        return shipB.hull < 3;
+    };
+
+    const sawItThere = [[400, 0, 10], [120, 0, 10], [0, 8, 10]];
+
+    assert.equal(shoot(sawItThere), false, "no view time: judged where B is now (a miss)");
+    assert.equal(shoot(sawItThere, 150), true, "seen 150 ms ago at (0, 10): a hit");
+    assert.equal(shoot(sawItThere, 50), false, "seen 50 ms ago, B had already moved: a miss");
+
+    // No further back than 200 ms.
+    const longAgo = [[450, 0, 10], [210, 0, 10], [190, 8, 10], [0, 8, 10]];
+    assert.equal(shoot(longAgo, 300), false, "a view from 300 ms ago only counts as 200");
+    assert.equal(shoot(longAgo, 205), false, "205 ms also counts as 200");
+
+    // The client sends the time of the picture it shows.
+    const mp = makeClient(server, "CHARLIE");
+    await waitFor(() => mp.isOnline(), 3000, "online");
+    const before = mp.serverNow();
+    assert.ok(mp.viewServerTime() < before && mp.viewServerTime() > before - 200, "view time is a little in the past");
+
+    shutdownAll();
+});
+
 test("cloak: only from 25,000; a cloaked ship is hidden from others, can't fire, can still be hit; death ends it", async () => {
     const server = await loadWorker();
     const a = await rawClient(server, "ALPHA");

@@ -69,6 +69,21 @@ const WORLD_SYNC_EVERY = Math.round(1000 / SIM_MS);
 // New asteroids and mines are considered twice a second.
 const SPAWN_CHECK_EVERY = Math.round(500 / SIM_MS);
 
+// Lag compensation. Each pilot sees the other ships slightly in the
+// past (their connection, plus the smoothing in multiplayer.js), so
+// shots are judged against where the shooter saw the target, not
+// where it is now: every shot carries the server time of the picture
+// the shooter was looking at ("vt"), and the server keeps a short
+// history of where each ship was. A shot can look back at most
+// maxRewindMs, so a very laggy connection can't hit ships from long
+// ago (and nobody can be hit more than that long after getting away).
+// 200 ms covers ordinary and laggy home connections in testing; 150
+// was too little for laggy ones.
+const LAG = {
+    maxRewindMs: 200,
+    historyMs: 500
+};
+
 const ROUND_MS = 15 * 60 * 1000;
 
 // Between rounds: long enough for the black hole finale and the
@@ -1160,6 +1175,13 @@ export class Lobby extends DurableObject {
         if (now - ship.lastFire[weapon] < cooldown) return;
         ship.lastFire[weapon] = now;
 
+        // How far back the shooter's view of the other ships was (see
+        // LAG).
+        const viewedAt = Number(data.vt);
+        const rewind = Number.isFinite(viewedAt)
+            ? clamp(now - viewedAt, 0, LAG.maxRewindMs)
+            : 0;
+
         // Use the reported origin if it's close to where we think the
         // ship is; otherwise our own estimate.
         const est = this.shipPosition(ship, now);
@@ -1183,13 +1205,15 @@ export class Lobby extends DurableObject {
                 z,
                 vx: dx * BULLET.speed,
                 vz: dz * BULLET.speed,
-                life: BULLET.life
+                life: BULLET.life,
+                rewind
             });
 
             this.event(["b", ship.id, round2(x), round2(z), round2(r)]);
         } else if (weapon === WEAPON.LASER) {
             const beam = {
                 owner: ship,
+                rewind,
                 ox: x,
                 oz: z,
                 dx,
@@ -1277,6 +1301,8 @@ export class Lobby extends DurableObject {
             if (this.round?.phase === "playing") {
                 this.simulate(dt, now);
             }
+
+            this.recordShipHistory(now);
         } catch (error) {
             // Keep the lobby alive; the next step starts clean.
             console.error("Simulation error:", error);
@@ -1973,7 +1999,8 @@ export class Lobby extends DurableObject {
             for (const s of this.ships.values()) {
                 if (!this.isTarget(s, b.owner, now)) continue;
 
-                const p = this.shipPosition(s, now);
+                // Where the shooter saw it.
+                const p = this.seenPosition(s, now, b.rewind);
                 consider("s", s, p.x, p.z, SHIP.radius);
             }
 
@@ -2039,7 +2066,7 @@ export class Lobby extends DurableObject {
         for (const s of this.ships.values()) {
             if (beam.hit.has(s) || !this.isTarget(s, beam.owner, now)) continue;
 
-            const p = this.shipPosition(s, now);
+            const p = this.seenPosition(s, now, beam.rewind);
             if (!touches(p.x, p.z, SHIP.radius)) continue;
 
             beam.hit.add(s);
@@ -2235,6 +2262,48 @@ export class Lobby extends DurableObject {
         };
     }
 
+    // Remember where each ship is (the same positions everyone is sent),
+    // for lag compensation.
+    recordShipHistory(now) {
+        for (const s of this.ships.values()) {
+            const trail = s.trail ?? (s.trail = []);
+
+            if (!s.alive) {
+                trail.length = 0;
+                continue;
+            }
+
+            const p = this.shipPosition(s, now);
+            trail.push([now, p.x, p.z]);
+
+            while (trail.length > 2 && now - trail[0][0] > LAG.historyMs) trail.shift();
+        }
+    }
+
+    // Where ship `s` was `rewind` ms ago, as the other pilots saw it.
+    seenPosition(s, now, rewind = 0) {
+        const trail = s.trail;
+        if (!rewind || !trail || trail.length === 0) return this.shipPosition(s, now);
+
+        const t = now - rewind;
+        const last = trail[trail.length - 1];
+
+        if (t >= last[0]) return this.shipPosition(s, now);
+        if (t <= trail[0][0]) return { x: trail[0][1], z: trail[0][2] };
+
+        for (let i = trail.length - 1; i > 0; i--) {
+            const a = trail[i - 1];
+            const b = trail[i];
+
+            if (t >= a[0]) {
+                const k = (t - a[0]) / Math.max(1, b[0] - a[0]);
+                return { x: a[1] + (b[1] - a[1]) * k, z: a[2] + (b[2] - a[2]) * k };
+            }
+        }
+
+        return this.shipPosition(s, now);
+    }
+
     isPresent(ship, now) {
         return ship.alive && ship.st === 1 && now - ship.stateAt < SHIP.presentMs;
     }
@@ -2351,6 +2420,9 @@ export class Lobby extends DurableObject {
         ship.hitCooldownUntil = 0;
         ship.dirty = true;
         ship.spawnMoved = true;
+
+        // A fresh start: no history from where it was before.
+        if (ship.trail) ship.trail.length = 0;
     }
 
     chooseSpawn(nearX, nearZ, now, self = null) {
