@@ -4919,7 +4919,10 @@ const ufo = {
     bolts: [],
     flashes: [],
     streaks: [],
+    beams: [],
     lights: [],
+    danger: null,
+    hostile: false,
 
     hits: [],
     spin: 0,
@@ -5048,7 +5051,8 @@ const UFO_GLOW_FRAGMENT_SHADER = /* glsl */ `
     uniform vec3 uColor;
     uniform float uFade;
 
-    // 0: radial flash; 1: streak (bright at the start, uv.y = 1).
+    // 0: radial flash; 1: streak (bright at the start, uv.y = 1);
+    // 2: plasma beam (even along its length, a white-hot core).
     uniform float uStreak;
 
     varying vec2 vUv;
@@ -5056,7 +5060,10 @@ const UFO_GLOW_FRAGMENT_SHADER = /* glsl */ `
     void main() {
         float glow;
 
-        if (uStreak > 0.5) {
+        if (uStreak > 1.5) {
+            float across = 1.0 - abs(vUv.x * 2.0 - 1.0);
+            glow = pow(across, 3.0) * 1.1 + pow(across, 18.0) * 2.4;
+        } else if (uStreak > 0.5) {
             float across = 1.0 - abs(vUv.x * 2.0 - 1.0);
             float along = vUv.y;
 
@@ -5181,6 +5188,7 @@ function createUfoBolt() {
     };
 }
 
+// mode: false/0 flash, true/1 streak, 2 plasma beam.
 function createUfoGlowMesh(streak) {
     const material = new THREE.ShaderMaterial({
         vertexShader: UFO_GLOW_VERTEX_SHADER,
@@ -5192,7 +5200,7 @@ function createUfoGlowMesh(streak) {
         uniforms: {
             uColor: { value: new THREE.Color(0x66ccff) },
             uFade: { value: 0 },
-            uStreak: { value: streak ? 1 : 0 }
+            uStreak: { value: streak === 2 ? 2 : streak ? 1 : 0 }
         }
     });
 
@@ -5276,6 +5284,29 @@ function buildUfo() {
     for (let i = 0; i < UFO_CONFIG.bolts; i++) ufo.bolts.push(createUfoBolt());
     for (let i = 0; i < 4; i++) ufo.flashes.push(createUfoGlowMesh(false));
     for (let i = 0; i < 2; i++) ufo.streaks.push(createUfoGlowMesh(true));
+    for (let i = 0; i < 3; i++) ufo.beams.push(createUfoGlowMesh(2));
+
+    // When it turns hostile: a pulsing red ring on the ground showing
+    // how close is too close.
+    const ringGeometry = new THREE.RingGeometry(UFO.hostileRadius - 0.25, UFO.hostileRadius, 96);
+    ringGeometry.rotateX(-Math.PI / 2);
+
+    const danger = new THREE.Mesh(
+        ringGeometry,
+        new THREE.MeshBasicMaterial({
+            color: 0xff2a4a,
+            transparent: true,
+            opacity: 0.3,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            toneMapped: false
+        })
+    );
+    danger.position.y = -1.9;
+    danger.visible = false;
+    group.add(danger);
+    ufo.danger = danger;
 }
 
 // ---- Clock and schedule -------------------------------------
@@ -5323,6 +5354,14 @@ function setNetUfoPlan(raw) {
         ufo.noticed = false;
         ufo.shotNotice = false;
         ufo.zoomed = false;
+    }
+
+    // It has just turned hostile.
+    if (plan.h && !(same && ufo.plan?.h)) {
+        const s = ufoState(plan, netServerNow());
+        const near = Math.hypot(s.x - player.position.x, s.z - player.position.z) < UFO_CONFIG.noticeDistance;
+
+        if (near && !net.dead) $("message").textContent = "THE UFO IS HOSTILE — KEEP AWAY";
     }
 
     ufo.plan = plan;
@@ -5565,7 +5604,54 @@ function ufoStreak(x, z, dirX, dirZ) {
     });
 }
 
+// The UFO's plasma beam: from (fromX, fromZ) to (toX, toZ), with a
+// flash at both ends and lightning crawling along it.
+function ufoPlasma(fromX, fromZ, toX, toZ) {
+    buildUfo();
+
+    const dx = toX - fromX;
+    const dz = toZ - fromZ;
+    const length = Math.max(0.5, Math.hypot(dx, dz));
+    const y = UFO_CONFIG.height - 0.2;
+
+    ufoFire(ufo.beams, (beam) => {
+        beam.holder.position.set(fromX, y, fromZ);
+        beam.holder.rotation.y = Math.atan2(dx, dz);
+        beam.length = length;
+        beam.life = beam.maxLife = 0.45;
+        beam.material.uniforms.uColor.value.set(0xff3df5);
+    });
+
+    ufoFlash(fromX, fromZ, 3.5, 0.35, 0xff66f0);
+    ufoFlash(toX, toZ, 5, 0.45, 0xffd0ff);
+
+    ufoTemp.set(fromX, y, fromZ);
+    ufoTemp2.set(toX, 0.5, toZ);
+
+    for (let i = 0; i < 3; i++) ufoBolt(ufoTemp, ufoTemp2, randomRange(0.2, 0.35), 0.7, 1.4);
+
+    const near = Math.hypot(toX - player.position.x, toZ - player.position.z);
+    if (near < 25) state.screenShake = Math.max(state.screenShake, 0.3);
+}
+
 function updateUfoGlows(dt) {
+    for (const beam of ufo.beams) {
+        if (beam.life <= 0) {
+            beam.holder.visible = false;
+            continue;
+        }
+
+        beam.life -= dt;
+
+        const k = Math.max(0, beam.life / beam.maxLife);
+        const width = 1.3 * (0.3 + 0.7 * k) * (0.85 + Math.random() * 0.3);
+
+        beam.holder.visible = true;
+        beam.plane.scale.set(width, beam.length, 1);
+        beam.plane.position.set(0, 0, beam.length / 2);
+        beam.material.uniforms.uFade.value = Math.min(1, k * 1.8);
+    }
+
     for (const flash of ufo.flashes) {
         if (flash.life <= 0) {
             flash.holder.visible = false;
@@ -5657,12 +5743,22 @@ function ufoShieldHit(x, z, arc = true) {
     }
 }
 
-// Your own shot hit it: a message the first time each visit.
+// Your own shot hit it. It fires back at once: a plasma beam that
+// destroys the ship outright. (Online the server does this, for
+// everyone; see ufoAttacked in src/index.js.)
 function ufoNoteOwnShot() {
-    if (ufo.shotNotice) return;
-    ufo.shotNotice = true;
+    if (net.active) return;
 
-    $("message").textContent = "SHOTS HAVE NO EFFECT";
+    ufoRetaliateSolo();
+}
+
+function ufoRetaliateSolo() {
+    if (!state.running || !player.mesh?.visible || !ufo.group?.visible) return;
+
+    const g = ufo.group.position;
+    ufoPlasma(g.x, g.z, player.position.x, player.position.z);
+
+    damagePlayer(state.lives, "ufo");
 }
 
 function ufoImpactLens(x, z) {
@@ -5977,8 +6073,28 @@ function ufoVanish(plan, now) {
 function animateUfoLights(s) {
     const t = s.t;
     const charge = s.phase === "charge" ? s.progress : s.phase === "depart" ? 1 : 0;
-    const rate = 3 + charge * 14;
+    const hostile = Boolean(ufo.plan?.h);
+    const rate = 3 + charge * 14 + (hostile ? 6 : 0);
     const swap = Math.sin(t * rate) > 0;
+
+    // Hostile: every light burns red.
+    if (hostile !== ufo.hostile) {
+        ufo.hostile = hostile;
+
+        for (const { material } of ufo.lights) {
+            if (!material.emissive) continue;
+
+            material.userData.color ??= material.emissive.clone?.() ?? null;
+
+            if (hostile) material.emissive.setHex?.(0xff2038);
+            else if (material.userData.color) material.emissive.copy?.(material.userData.color);
+        }
+    }
+
+    if (ufo.danger) {
+        ufo.danger.visible = hostile && s.phase !== "depart";
+        ufo.danger.material.opacity = 0.4 + 0.2 * Math.sin(t * 5);
+    }
 
     for (const { key, material } of ufo.lights) {
         const base = material.userData.base ?? 1;
@@ -8251,7 +8367,7 @@ function circlesOverlap(a, b, radiusA, radiusB) {
 // ignores the short cooldown between hits).
 function damagePlayer(amount = 1, cause = "") {
     if (!state.running) return;
-    if (state.damageCooldown > 0 && cause !== "rogue") return;
+    if (state.damageCooldown > 0 && cause !== "rogue" && cause !== "ufo") return;
 
     // Online, the server decides damage (see ONLINE WORLD).
     if (net.active) return;
@@ -8274,6 +8390,7 @@ function damagePlayer(amount = 1, cause = "") {
         endGame(1300);
 
         if (cause === "rogue") $("message").textContent = "HIT BY THE ROGUE ASTEROID";
+        if (cause === "ufo") $("message").textContent = "VAPORIZED BY THE UFO";
     } else {
         $("message").textContent = "WARNING: HULL DAMAGED";
     }
@@ -9291,7 +9408,9 @@ function netShipDestroyed(killerId, cause = "") {
         ? `DESTROYED BY ${netName(killerId)}`
         : cause === "rogue"
             ? "HIT BY THE ROGUE ASTEROID"
-            : "SHIP DESTROYED";
+            : cause === "ufo"
+                ? "VAPORIZED BY THE UFO"
+                : "SHIP DESTROYED";
 
     updateHUD();
 }
@@ -9758,6 +9877,27 @@ function applyNetEvent(e, lag) {
             // A visit starts, or its plan changed: [plan].
             setNetUfoPlan(e[1]);
             break;
+
+        case "up": {
+            // The UFO fired its plasma beam: [ufoX, ufoZ, target, x, z].
+            // Drawn from where the saucer and the ship are on this
+            // screen, so it lines up.
+            const target = String(e[3]);
+            let toX = Number(e[4]);
+            let toZ = Number(e[5]);
+
+            if (netSelf(target)) {
+                toX = player.position.x;
+                toZ = player.position.z;
+            } else {
+                const ship = multiplayer?.remoteShipPositions().find((p) => String(p.id) === target);
+                if (ship) { toX = ship.x; toZ = ship.z; }
+            }
+
+            const from = ufo.group?.visible ? ufo.group.position : { x: Number(e[1]), z: Number(e[2]) };
+            ufoPlasma(from.x, from.z, toX, toZ);
+            break;
+        }
 
         case "uh": {
             // Its shield took a hit: [x, z, by, weapon]. Your own

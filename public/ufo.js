@@ -25,6 +25,8 @@ Plan:
          over to keep watching.
   f      (optional) time (ms) it was told to leave early (end of a
          round, or the black hole)
+  h      (optional) 1 once it has turned hostile (it was attacked
+         UFO.angerLimit times)
 ============================================================
 */
 
@@ -39,8 +41,8 @@ export const UFO = {
     solidAfterSec: 0.7,
 
     // Watching (seconds), chosen per visit.
-    observeMin: 9,
-    observeMax: 14,
+    observeMin: 16,
+    observeMax: 22,
 
     // Powering up before leaving.
     chargeSec: 1.5,
@@ -69,7 +71,15 @@ export const UFO = {
     // one, at most this often (ms), and at most this many legs.
     followDistance: 15,
     followEveryMs: 3000,
-    maxLegs: 10
+    maxLegs: 10,
+
+    // Shoot it and it fires back: a plasma beam that destroys the
+    // attacker outright. After this many attackers it turns hostile and
+    // fires at any ship that comes within hostileRadius (one shot every
+    // hostileShotMs), until it leaves.
+    angerLimit: 3,
+    hostileRadius: 14,
+    hostileShotMs: 900
 };
 
 // Seconds from the start until each phase ends.
@@ -297,6 +307,7 @@ export function readUfoPlan(raw) {
     };
 
     if (raw.f !== null && raw.f !== undefined && n(raw.f)) plan.f = Number(raw.f);
+    if (raw.h) plan.h = 1;
 
     return plan;
 }

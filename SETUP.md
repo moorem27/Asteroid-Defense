@@ -81,14 +81,19 @@ can award themselves points.
     (Blender or plain `python3`); any that are missing fall back to the
     starfighter and the normal explosion.
 - **UFO visits.** Once or twice a round (once or twice per solo game, too) a
-  flying saucer appears near a random pilot, watches for 9–14 seconds,
+  flying saucer appears near a random pilot, watches for 16–22 seconds,
   following them if they fly off, and then leaves at an impossible speed:
   - everyone in the lobby sees the same saucer, because the server decides when
     and where it appears and what hits it (`public/ufo.js` holds the flight
     plan both sides use)
-  - nothing hurts it and it hurts nobody: its shield absorbs bullets, stops the
-    laser, sets rockets off and turns asteroids aside, and there are no points
-    for shooting it
+  - nothing hurts it: its shield absorbs bullets, stops the laser, sets
+    rockets off and turns asteroids aside
+  - it leaves pilots alone unless they shoot it. Whoever does is destroyed at
+    once by a plasma blast (no shield or warp bubble stops it, and nobody gets
+    points for it)
+  - after three attackers it turns hostile (red lights, a red ring on the
+    ground) and blasts any ship that comes within that ring, until it leaves;
+    respawns are placed well outside it
   - the model is `public/assets/ufo.glb`, made by `blender/generate_ufo.py`
     (run it with Blender, or with plain `python3`). If the file is missing, the
     game draws a simpler stand-in saucer.

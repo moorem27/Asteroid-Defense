@@ -1191,6 +1191,7 @@ export class Lobby extends DurableObject {
                 if (along >= 0) {
                     beam.range = along;
                     this.event(["uh", round2(x + dx * along), round2(z + dz * along), ship.id, 1]);
+                    this.ufoAttacked(ship, now);
                 }
             }
 
@@ -1342,6 +1343,9 @@ export class Lobby extends DurableObject {
                 return;
             }
 
+            // Hostile: it fires at any ship that comes too close.
+            if (this.ufo.h) this.ufoDefend(state, now);
+
             // Keep watching the pilot it came to see.
             const watched = this.findShip(this.ufo.w);
 
@@ -1376,6 +1380,9 @@ export class Lobby extends DurableObject {
 
         const p = this.shipPosition(ship, now);
 
+        this.ufoAnger = 0;
+        this.ufoNextShot = 0;
+
         this.ufo = createUfoPlan(Math.random, {
             id: ++this.ufoCount,
             startMs: now,
@@ -1387,6 +1394,61 @@ export class Lobby extends DurableObject {
         });
 
         this.event(["us", this.ufo]);
+    }
+
+    // Something hit the UFO's shield: it fires back at whoever did it
+    // (bullets still in flight from a ship it already destroyed don't
+    // count). Attacked angerLimit times, it turns hostile.
+    ufoAttacked(attacker, now) {
+        if (!this.ufo || !attacker || !attacker.alive) return;
+        if (![...this.ships.values()].includes(attacker)) return;
+
+        this.ufoZap(attacker, now);
+
+        this.ufoAnger = (this.ufoAnger ?? 0) + 1;
+
+        if (this.ufoAnger >= UFO.angerLimit && !this.ufo.h) {
+            this.ufo.h = 1;
+            this.ufoNextShot = now + UFO.hostileShotMs;
+            this.event(["us", this.ufo]);
+        }
+    }
+
+    // Hostile: one shot at a time at the nearest ship in range (not
+    // one that has just respawned and is still shielded).
+    ufoDefend(state, now) {
+        if (!state.solid || now < (this.ufoNextShot ?? 0)) return;
+        if (state.phase !== "observe" && state.phase !== "charge") return;
+
+        let target = null;
+        let nearest = UFO.hostileRadius;
+
+        for (const s of this.ships.values()) {
+            if (!this.isPresent(s, now) || now < s.shieldUntil) continue;
+
+            const p = this.shipPosition(s, now);
+            const d = Math.hypot(p.x - state.x, p.z - state.z);
+
+            if (d < nearest) {
+                nearest = d;
+                target = s;
+            }
+        }
+
+        if (!target) return;
+
+        this.ufoNextShot = now + UFO.hostileShotMs;
+        this.ufoZap(target, now);
+    }
+
+    // A plasma beam from the UFO destroys the ship outright (no shield
+    // or warp bubble stops it).
+    ufoZap(ship, now) {
+        const state = ufoState(this.ufo, now);
+        const p = this.shipPosition(ship, now);
+
+        this.event(["up", round2(state.x), round2(state.z), ship.id, round2(p.x), round2(p.z)]);
+        this.damageShip(ship, ship.hull, null, now, "ufo");
     }
 
     // The UFO's position while its shield is up (stopping shots), or
@@ -1910,6 +1972,7 @@ export class Lobby extends DurableObject {
                 } else if (best.kind === "u") {
                     // Absorbed by the UFO's shield.
                     this.event(["uh", round2(hx), round2(hz), b.owner.id, 0]);
+                    this.ufoAttacked(b.owner, now);
                 } else {
                     this.damageShip(best.ref, BULLET.shipDamage, b.owner, now);
                 }
@@ -2039,6 +2102,7 @@ export class Lobby extends DurableObject {
                     const hz = ufo.z + ((rocket.z - ufo.z) / d) * UFO.shieldRadius;
 
                     this.event(["uh", round2(hx), round2(hz), rocket.owner.id, 2]);
+                    this.ufoAttacked(rocket.owner, now);
                 }
             }
 
@@ -2172,10 +2236,12 @@ export class Lobby extends DurableObject {
 
     // cause: "rogue" for the rogue asteroid (it ignores the short
     // cooldown between hits, and players are told what got them).
+    // cause "ufo": the UFO's plasma beam, which nothing stops and which
+    // no pilot gets credit for.
     damageShip(ship, amount, attacker, now, cause = null) {
         if (!ship.alive) return;
-        if (now < ship.shieldUntil || now < ship.warpUntil) return;
-        if (now < ship.hitCooldownUntil && cause !== "rogue") return;
+        if (cause !== "ufo" && (now < ship.shieldUntil || now < ship.warpUntil)) return;
+        if (now < ship.hitCooldownUntil && cause !== "rogue" && cause !== "ufo") return;
 
         ship.hull = Math.max(0, ship.hull - amount);
         ship.hitCooldownUntil = now + SHIP.hitCooldownMs;
@@ -2197,7 +2263,7 @@ export class Lobby extends DurableObject {
         // the kill, even if it was finished off by an asteroid.
         let killer = attacker && attacker !== ship ? attacker : null;
 
-        if (!killer && ship.lastHitBy && now - ship.lastHitAt < 5000) {
+        if (!killer && ship.lastHitBy && now - ship.lastHitAt < 5000 && cause !== "ufo") {
             killer = ship.lastHitBy;
         }
 
@@ -2241,6 +2307,21 @@ export class Lobby extends DurableObject {
     }
 
     chooseSpawn(nearX, nearZ, now, self = null) {
+        // Near a hostile UFO: look for a spot well outside its range.
+        if (this.ufo?.h) {
+            const u = ufoState(this.ufo, now);
+            const dx = nearX - u.x;
+            const dz = nearZ - u.z;
+            const d = Math.hypot(dx, dz);
+            const want = UFO.hostileRadius + 30;
+
+            if (u.phase !== "gone" && d < want) {
+                const k = d > 0.01 ? 1 / d : 0;
+                nearX = u.x + (k ? dx * k : 1) * want;
+                nearZ = u.z + (k ? dz * k : 0) * want;
+            }
+        }
+
         let best = { x: clamp(nearX, -HALF_W + 10, HALF_W - 10), z: clamp(nearZ, -HALF_H + 10, HALF_H - 10) };
         let bestClearance = -1;
 
@@ -2259,6 +2340,13 @@ export class Lobby extends DurableObject {
             for (const s of this.ships.values()) {
                 if (s === self || !s.alive) continue;
                 clearance = Math.min(clearance, Math.hypot(s.x - x, s.z - z) * 0.5);
+            }
+
+            // Never inside a hostile UFO's range.
+            if (this.ufo?.h) {
+                const u = ufoState(this.ufo, now);
+
+                if (u.phase !== "gone" && Math.hypot(u.x - x, u.z - z) < UFO.hostileRadius + 6) clearance = -100;
             }
 
             if (clearance > bestClearance) {

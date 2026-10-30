@@ -855,7 +855,7 @@ function settleUfo(t, x, z) {
     plan.o = 30;
 }
 
-test("UFO (solo): visits, shrugs off bullets, lasers and rockets, turns rocks aside, then zooms off", async () => {
+test("UFO (solo): visits, turns rocks aside, destroys you if you shoot it, then zooms off", async () => {
     const server = await loadWorker();
     server.down = true;
 
@@ -903,40 +903,6 @@ test("UFO (solo): visits, shrugs off bullets, lasers and rockets, turns rocks as
     const behind = t.asteroids.at(-1);
     behind.velocity.set(0, 0, 0);
 
-    const score = t.state.score;
-
-    // Bullets: absorbed.
-    t.fireSelectedWeapon();
-    await play(game, 600, () => faceForward(game));
-
-    assert.equal(t.bullets.length, 0, "bullet gone");
-    assert.ok(t.asteroids.includes(behind), "the rock behind it is untouched");
-    assert.ok(t.ufo.hits.length > 0, "the shield lit up where it was hit");
-    assert.equal(dom.el("message").textContent, "SHOTS HAVE NO EFFECT");
-    assert.equal(t.state.score, score, "no points");
-
-    // Laser: stopped at the shield.
-    t.state.score = 20000;
-    t.checkWeaponUnlocks();
-    t.selectWeapon("laser");
-    t.ufo.hits.length = 0;
-
-    t.fireSelectedWeapon();
-    await play(game, 300, () => faceForward(game));
-
-    assert.ok(t.asteroids.includes(behind), "the laser didn't reach the rock");
-    assert.ok(t.ufo.hits.length > 0, "laser impact on the shield");
-
-    // Rockets: go off against it.
-    t.selectWeapon("rockets");
-    t.fireSelectedWeapon();
-    assert.equal(t.rockets.length, 1, "rocket away");
-    await playUntil(game, () => t.rockets.length === 0, 3000, "rocket detonated", () => faceForward(game));
-    await play(game, 50, () => faceForward(game));
-
-    assert.ok(t.asteroids.includes(behind), "the rocket didn't get through");
-    assert.ok(t.ufo.plan, "still here");
-
     // Rocks glance off the shield.
     const at = t.ufoState(t.ufo.plan, t.ufoNow());
     t.createAsteroid(new Vector3(at.x + 6, 0, at.z), 0.72);
@@ -956,6 +922,27 @@ test("UFO (solo): visits, shrugs off bullets, lasers and rockets, turns rocks as
     const gap = Math.hypot(t.player.position.x - after.x, t.player.position.z - after.z);
     assert.ok(gap >= t.UFO.shieldRadius, "pushed outside the shield");
     assert.equal(t.state.lives, lives, "no damage");
+
+    // Leave it alone and it leaves you alone. Shoot it: the shot is
+    // absorbed, and a plasma blast destroys the ship at once.
+    const score = t.state.score;
+    t.player.position.set(p.x, 0, p.z);
+    t.player.velocity.set(0, 0, 0);
+    await play(game, 50, () => faceForward(game));
+    assert.equal(t.state.lives, 3, "untouched so far");
+
+    t.fireSelectedWeapon();
+    await play(game, 600, () => faceForward(game));
+
+    assert.equal(t.bullets.length, 0, "bullet gone");
+    assert.ok(t.asteroids.includes(behind), "the rock behind it is untouched");
+    assert.ok(t.ufo.hits.length > 0, "the shield lit up where it was hit");
+    assert.equal(t.state.score, score, "no points");
+
+    assert.equal(t.state.lives, 0, "destroyed in one shot");
+    assert.equal(t.state.running, false);
+    assert.equal(dom.el("message").textContent, "VAPORIZED BY THE UFO");
+    assert.equal(t.shipExplosions.length, 1, "the ship blew up");
 
     // Time to go: it charges up, then it's gone.
     t.ufo.plan.f = t.ufoNow();

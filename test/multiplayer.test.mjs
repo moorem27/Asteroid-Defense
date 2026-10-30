@@ -511,7 +511,7 @@ test("UFO: it glides after the pilot it's watching", async () => {
     shutdownAll();
 });
 
-test("UFO: its shield absorbs bullets, stops lasers and rockets, and turns asteroids aside", async () => {
+test("UFO: its shield absorbs shots and turns asteroids aside", async () => {
     const server = await loadWorker();
     const a = await rawClient(server, "ALPHA");
     const lobby = quietLobby(server);
@@ -520,39 +520,108 @@ test("UFO: its shield absorbs bullets, stops lasers and rockets, and turns aster
     placeUfo(lobby, 0, 14);
 
     const behind = lobby.spawnAsteroid(0, 30, 0.72, 0, 0);
+    let x = ufoState(lobby.ufo, Date.now()).x;
 
-    await hold([[a, 0, 0]], 150);
+    await hold([[a, x, 0]], 150);
+    x = ufoState(lobby.ufo, Date.now()).x;
+    a.fire(0, x, 1.1, 0);
 
-    a.fire(0, 0, 1.1, 0);
     await waitFor(() => a.eventsOf("uh").length, 1000, "bullet absorbed");
 
     const bh = a.eventsOf("uh")[0];
     assert.equal(bh[3], a.id);
     assert.equal(bh[4], 0, "a bullet");
     assert.equal(a.eventsOf("bh").length, 0, "it hit nothing else");
-
-    a.fire(1, 0, 1.1, 0);
-    await waitFor(() => a.eventsOf("uh").some((e) => e[4] === 1), 1000, "laser stopped");
-    await hold([[a, 0, 0]], 300);
-
-    a.fire(2, 0, 1.1, 0);
-    await waitFor(() => a.eventsOf("uh").some((e) => e[4] === 2), 3000, "rocket went off on it");
-    assert.ok(a.eventsOf("rx").length >= 1, "rocket exploded");
-
     assert.ok(lobby.asteroids.includes(behind), "nothing got through to the rock behind it");
-    assert.equal(shipOf(lobby, a).score, 20000, "no points for shooting it");
 
-    // A rock flying at it glances off.
+    // A rock flying at it glances off (and that isn't an attack).
     const s = ufoState(lobby.ufo, Date.now());
     const rock = lobby.spawnAsteroid(s.x + 6, s.z, 0.72, -8, 0);
 
     await waitFor(() => rock.vx > 0, 1500, "bounced");
-
-    // The update reaches players with the next broadcast.
     await waitFor(() => a.eventsOf("au").some((e) => e[1] === rock.id), 1000, "everyone told");
 
     const now = ufoState(lobby.ufo, Date.now());
     assert.ok(Math.hypot(rock.x - now.x, rock.z - now.z) >= UFO.shieldRadius, "outside the shield");
+
+    shutdownAll();
+});
+
+test("UFO: shoot it and it destroys you with one plasma blast; three attackers and it turns hostile", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const c = await rawClient(server, "CHARLIE");
+    const d = await rawClient(server, "DELTA");
+    const lobby = quietLobby(server);
+
+    for (const ship of lobby.ships.values()) ship.score = 20000;
+
+    placeUfo(lobby, 0, 14);
+
+    const ux = () => ufoState(lobby.ufo, Date.now()).x;
+
+    // Everyone well away, except the one about to fire.
+    const positions = { a: [ux(), 0], b: [60, -40], c: [-60, -40], d: [60, 60] };
+    const holdAll = (ms) => hold([[a, ...positions.a], [b, ...positions.b], [c, ...positions.c], [d, ...positions.d]], ms);
+
+    await holdAll(150);
+    unshield(lobby);
+
+    // It doesn't attack anyone who leaves it alone.
+    assert.equal(a.eventsOf("up").length, 0);
+
+    // ALPHA fires a bullet: vaporized.
+    positions.a = [ux(), 0];
+    await holdAll(60);
+    a.fire(0, positions.a[0], 1.1, 0);
+
+    await waitFor(() => a.eventsOf("up").length === 1, 1000, "plasma blast");
+    assert.equal(a.eventsOf("up")[0][3], a.id, "at the attacker");
+    await waitFor(() => a.eventsOf("sk").some((e) => e[1] === a.id && e[5] === "ufo"), 1000, "ALPHA destroyed");
+    assert.equal(shipOf(lobby, a).alive, false);
+
+    // Shots still in the air from a ship it already destroyed don't count.
+    assert.equal(lobby.ufoAnger, 1);
+
+    // BRAVO tries the laser (from out of range of nothing: it fired).
+    positions.a = [200, 140];
+    positions.b = [ux(), -2];
+    await holdAll(1100);
+    b.fire(1, positions.b[0], -0.9, 0);
+    await waitFor(() => a.eventsOf("sk").some((e) => e[1] === b.id && e[5] === "ufo"), 1000, "BRAVO destroyed");
+
+    // CHARLIE's rocket goes off on the shield; CHARLIE is destroyed too.
+    positions.b = [-200, 140];
+    positions.c = [ux(), -2];
+    await holdAll(300);
+    c.fire(2, positions.c[0], -0.9, 0);
+    await waitFor(() => a.eventsOf("sk").some((e) => e[1] === c.id && e[5] === "ufo"), 3000, "CHARLIE destroyed");
+
+    // Three attackers: hostile, and everyone is told.
+    await waitFor(() => a.eventsOf("us").some((e) => e[1].h === 1), 1000, "hostile");
+    assert.equal(lobby.ufo.h, 1);
+
+    // DELTA (who never fired) stays out of range: safe.
+    positions.c = [200, -140];
+    await holdAll(1200);
+    assert.ok(shipOf(lobby, d).alive, "out of range: safe");
+
+    // DELTA comes close: destroyed.
+    const s = ufoState(lobby.ufo, Date.now());
+    positions.d = [s.x + 8, s.z];
+    await holdAll(1500);
+
+    assert.ok(a.eventsOf("sk").some((e) => e[1] === d.id && e[5] === "ufo"), "came too close");
+
+    // No points for anyone from the UFO's kills.
+    for (const ship of lobby.ships.values()) assert.equal(ship.kills, 0);
+
+    // Respawns land well outside its range.
+    lobby.respawn(shipOf(lobby, d), Date.now());
+    const now = ufoState(lobby.ufo, Date.now());
+    const sd = shipOf(lobby, d);
+    assert.ok(Math.hypot(sd.x - now.x, sd.z - now.z) > UFO.hostileRadius, "respawned outside its range");
 
     shutdownAll();
 });
