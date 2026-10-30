@@ -1682,6 +1682,18 @@ test("allowed origins: with ALLOWED_ORIGINS set, only those pages can connect", 
     const ok = await rawClient(server, "GOOD");
     assert.ok(ok.welcome);
 
+    // The same site opened as http:// (some browsers don't upgrade).
+    server.origin = "http://amaxcon.com";
+    const plain = await rawClient(server, "PLAIN");
+    assert.ok(plain.welcome);
+
+    // A different port or site is not the same.
+    server.origin = "http://localhost:9999";
+    await assert.rejects(rawClient(server, "PORT"));
+
+    server.origin = "https://amaxcon.com.evil.example";
+    await assert.rejects(rawClient(server, "LOOKALIKE"));
+
     server.origin = "https://evil.example";
     await assert.rejects(rawClient(server, "BAD"));
 

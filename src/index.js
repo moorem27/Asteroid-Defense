@@ -338,6 +338,26 @@ export default {
 
 const LOBBY_ID_PATTERN = /^lobby-[0-9a-f-]{36}$/;
 
+// Is a connection's Origin (the page it comes from) one of the game's
+// own? Compared by site name and port, so the same site counts
+// whether the page was opened as http:// or https:// (some browsers
+// open http:// links as they are, others upgrade them).
+function originAllowed(origin, list) {
+    const site = (value) => {
+        try {
+            const u = new URL(String(value).trim());
+            return u.protocol === "http:" || u.protocol === "https:" ? u.host.toLowerCase() : null;
+        } catch {
+            return null;
+        }
+    };
+
+    const wanted = site(origin);
+    if (!wanted) return false;
+
+    return String(list).split(",").some((entry) => site(entry) === wanted);
+}
+
 // The all-time top 10, for the start screen and HUD. Cached briefly at
 // the edge, so thousands of page loads cost only a few Matchmaker
 // requests. (The cache only works on a custom domain; on workers.dev
@@ -387,13 +407,9 @@ async function handleJoin(request, env, url) {
         return new Response("Protocol version mismatch", { status: 409 });
     }
 
-    if (env.ALLOWED_ORIGINS) {
-        const allowed = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
-        const origin = request.headers.get("Origin");
-
-        if (!origin || !allowed.includes(origin)) {
-            return new Response("Origin not allowed", { status: 403 });
-        }
+    if (env.ALLOWED_ORIGINS && !originAllowed(request.headers.get("Origin"), env.ALLOWED_ORIGINS)) {
+        console.warn(`Refused a connection from origin ${request.headers.get("Origin") ?? "(none)"}`);
+        return new Response("Origin not allowed", { status: 403 });
     }
 
     // A player reconnecting asks to go back to the lobby they were in.
@@ -907,6 +923,7 @@ export class Lobby extends DurableObject {
         const ip = request.headers.get("CF-Connecting-IP");
 
         if (ip && sockets.filter((ws) => readAttachment(ws)?.ip === ip).length >= MAX_PER_IP) {
+            console.warn(`Refused a connection: already ${MAX_PER_IP} from one address in this lobby`);
             return new Response("Too many connections", { status: 429 });
         }
 
