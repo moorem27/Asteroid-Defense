@@ -59,7 +59,8 @@ body {
 /* The start and game-over panels scroll on short screens, so they
    still allow vertical swipes; buttons must still respond to taps. */
 #start-screen,
-#game-over {
+#game-over,
+#round-results {
     touch-action: pan-y;
 }
 
@@ -293,7 +294,9 @@ pointer-events: none;
     overflow-y: auto;
     padding: calc(24 * var(--u));
     text-align: center;
-    pointer-events: none;
+
+    /* Scrollable when it doesn't fit (a phone held sideways). */
+    pointer-events: auto;
 
     /* Translucent, so the black hole stays visible behind it. */
     background: radial-gradient(circle, rgba(3, 5, 20, 0.35) 0%, rgba(3, 5, 20, 0.8) 75%);
@@ -357,6 +360,13 @@ pointer-events: none;
 .records-list .rec-you .rec-score { color: var(--yellow); }
 
 #round-results .records { margin-top: calc(18 * var(--u)); }
+
+/* While the round results are up, the HUD steps aside (it would show
+   through the see-through panel, doubling up scores and the clock). */
+body.results-open #hud,
+body.results-open #bottom-hud {
+    visibility: hidden;
+}
 
 .results-record { margin-top: calc(14 * var(--u)); color: var(--yellow); font-size: clamp(calc(9 * var(--u)), 2vw, calc(13 * var(--u))); text-shadow: 0 0 12px var(--yellow); animation: match-clock-pulse 0.8s ease-in-out infinite alternate; }
 
@@ -456,6 +466,56 @@ pointer-events: none;
 #net-status[data-state="offline"] { color: #8f93b8; }
 
 .mission-goal { margin: calc(4 * var(--u)) 0 0; color: var(--cyan); font-size: calc(8 * var(--u)); line-height: 2; overflow-wrap: anywhere; }
+
+/* ============================================================
+   SHIP PICKER (title and game-over screens)
+   ============================================================ */
+
+.ship-picker {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(10 * var(--u));
+    margin-top: calc(12 * var(--u));
+}
+
+.ship-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: calc(120 * var(--u));
+}
+
+.ship-image {
+    width: calc(84 * var(--u));
+    height: calc(84 * var(--u));
+    object-fit: contain;
+    filter: drop-shadow(0 0 calc(6 * var(--u)) rgba(66, 245, 242, 0.35));
+    pointer-events: none;
+}
+
+.ship-name {
+    margin-top: calc(4 * var(--u));
+    font-size: calc(9 * var(--u));
+    letter-spacing: calc(1 * var(--u));
+    text-shadow: 0 0 10px currentColor;
+    white-space: nowrap;
+}
+
+.ship-arrow {
+    min-width: calc(36 * var(--u));
+    min-height: calc(36 * var(--u));
+    padding: 0;
+    border: 1px solid var(--cyan);
+    background: rgba(7, 12, 35, 0.6);
+    color: var(--cyan);
+    font-family: inherit;
+    font-size: calc(10 * var(--u));
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.ship-arrow:hover { background: var(--cyan); color: #080716; }
 
 /* ============================================================ GAME SCREENS ============================================================ */
 
@@ -734,5 +794,48 @@ background: rgba(2, 3, 15, 0.92);
     .arcade-button {
         margin: calc(10 * var(--u)) 0;
         padding: calc(12 * var(--u));
+    }
+
+    /* The round results, tightened to fit. */
+    .results-title {
+        font-size: min(clamp(calc(24 * var(--u)), 6vw, calc(48 * var(--u))), 11vh);
+    }
+
+    .results-winner { margin-top: calc(6 * var(--u)); }
+    .results-list { margin-top: calc(8 * var(--u)); line-height: 1.7; }
+    .results-record { margin-top: calc(6 * var(--u)); }
+    #round-results .records { margin-top: calc(8 * var(--u)); }
+    .results-next { margin-top: calc(8 * var(--u)); }
+
+    /* The ship picker moves just below the button (so the button is
+       on screen without scrolling), the name beside the picture. */
+    .ship-picker {
+        order: 1;
+        margin-top: 0;
+    }
+
+    #start-screen .records,
+    #start-screen .controls,
+    #start-screen .panel-bottomline,
+    #game-over .records,
+    #game-over .panel-bottomline {
+        order: 2;
+    }
+
+    .ship-card {
+        flex-direction: row;
+        gap: calc(8 * var(--u));
+        width: auto;
+        min-width: calc(150 * var(--u));
+        justify-content: center;
+    }
+
+    .ship-image {
+        width: calc(44 * var(--u));
+        height: calc(44 * var(--u));
+    }
+
+    .ship-name {
+        margin-top: 0;
     }
 }

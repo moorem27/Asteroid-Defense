@@ -90,8 +90,15 @@ export class Multiplayer {
      * @param {object} options
      * @param {object} options.THREE
      * @param {object} options.scene
-     * @param {Function} options.createShipModel   New ship model (may
-     *        throw until models have loaded).
+     * @param {Function} options.createShipModel   (design, damage) New
+     *        ship model: design is the pilot's ship (0-3), damage 0
+     *        (intact), 1 (damaged) or 2 (critical). May throw until
+     *        models have loaded.
+     * @param {Function} [options.spawnDamageSmoke] (x, z, heading)
+     *        smoke from a damaged ship (defaults to spawnSmoke).
+     * @param {Function} [options.smokePoints]     (design) Where a
+     *        critically damaged ship smokes: [[x, y, z], ...] in ship
+     *        space.
      * @param {Function} [options.createRocketModel] New rocket model.
      * @param {Function} [options.spawnSmoke]      (x, z, heading) smoke puff.
      * @param {number}  [options.shipScale]
@@ -115,6 +122,8 @@ export class Multiplayer {
         // bubbles (game.js createWarpLens). Returns null if it can't.
         this.createWarpLens = options.createWarpLens ?? null;
         this.spawnSmoke = options.spawnSmoke ?? null;
+        this.smokePoints = options.smokePoints ?? null;
+        this.spawnDamageSmoke = options.spawnDamageSmoke ?? options.spawnSmoke ?? null;
         this.shipScale = options.shipScale ?? 1;
         this.statusElement = options.statusElement ?? null;
         this.leaderboardElement = options.leaderboardElement ?? null;
@@ -251,6 +260,14 @@ export class Multiplayer {
     nameOf(id) {
         if (id === this.selfId) return this.selfName ?? "YOU";
         return this.roster.get(String(id))?.name ?? "A PILOT";
+    }
+
+    // The ship design another pilot flies (0 if unknown).
+    designOf(id) {
+        const samples = this.remotes.get(String(id))?.samples;
+        const last = samples?.[samples.length - 1];
+
+        return last ? last.design : (this.lastDesign?.get(String(id)) ?? 0);
     }
 
     colorOf(id) {
@@ -481,7 +498,8 @@ export class Multiplayer {
             vz: round2(local?.vz ?? 0),
             th: local?.thrust > 0 ? 1 : local?.thrust < 0 ? -1 : 0,
             st,
-            w: local?.weapon ?? 0
+            w: local?.weapon ?? 0,
+            d: local?.design ?? 0
         });
     }
 
@@ -715,7 +733,12 @@ export class Multiplayer {
                     vx: num(e[4]),
                     vz: num(e[5]),
                     th: num(e[6]),
-                    flags: num(e[7])
+                    flags: num(e[7]),
+
+                    // Ship design and hull (missing from older servers:
+                    // the starfighter, undamaged).
+                    design: e.length > 9 ? num(e[9]) : 0,
+                    hull: e.length > 10 ? num(e[10]) : 3
                 };
 
                 const last = remote.samples[remote.samples.length - 1];
@@ -788,10 +811,12 @@ export class Multiplayer {
             } else if (type === "rx" || type === "rz") {
                 this.removeRocket(String(e[1]));
             } else if (type === "sk") {
-                // A ship was destroyed: hide it right away.
+                // A ship was destroyed: hide it right away (keeping
+                // which design it was, for the explosion).
                 const remote = this.remotes.get(String(e[1]));
 
                 if (remote) {
+                    (this.lastDesign ??= new Map()).set(remote.id, this.designOf(remote.id));
                     remote.samples.length = 0;
                     if (remote.visual) remote.visual.group.visible = false;
                 }
@@ -899,6 +924,9 @@ export class Multiplayer {
             const visual = remote.visual ?? this.createVisual(remote);
             if (!visual) continue;
 
+            // The right ship, in the right state of damage.
+            this.matchShipModel(remote, visual, last);
+
             const pose = samplePose(samples, renderTime);
 
             visual.group.position.set(pose.x, 0, pose.z);
@@ -923,16 +951,85 @@ export class Multiplayer {
             }
 
             this.updateRemoteLens(visual, pose, last, visual.bubble.visible);
+
+            // Badly damaged: a trail of smoke.
+            if (visual.damage === 2 && this.spawnDamageSmoke) {
+                visual.smokeClock = (visual.smokeClock ?? 0) - (t - (visual.lastSmokeAt ?? t)) / 1000;
+                visual.lastSmokeAt = t;
+
+                if (visual.smokeClock <= 0) {
+                    visual.smokeClock = 0.08;
+                    this.emitDamageSmoke(remote, pose);
+                }
+            }
         }
+    }
+
+    // Damage level for a hull value: 3 = intact, 2 = damaged, 1 or
+    // less = critical.
+    static damageLevel(hull) {
+        return hull >= 3 ? 0 : hull === 2 ? 1 : 2;
+    }
+
+    matchShipModel(remote, visual, last) {
+        const design = last.design ?? 0;
+        const damage = Multiplayer.damageLevel(last.hull ?? 3);
+
+        if (visual.design === design && visual.damage === damage) return;
+
+        let ship;
+
+        try {
+            ship = this.createShipModel(design, damage);
+        } catch {
+            return;
+        }
+
+        if (!ship) return;
+
+        const old = visual.ship;
+
+        ship.scale.copy?.(old.scale);
+        ship.position.copy?.(old.position);
+        ship.rotation.y = old.rotation.y;
+
+        // The engine glow rides on the ship model.
+        if (visual.enginePivot) ship.add?.(visual.enginePivot);
+
+        visual.group.remove(old);
+        visual.group.add(ship);
+
+        visual.ship = ship;
+        visual.design = design;
+        visual.damage = damage;
+    }
+
+    emitDamageSmoke(remote, pose) {
+        const points = this.smokePoints?.(remote.visual.design) ?? [];
+        if (points.length === 0) return;
+
+        const [lx, , lz] = points[Math.floor(Math.random() * points.length)];
+        const c = Math.cos(pose.r);
+        const s = Math.sin(pose.r);
+        const k = this.shipScale;
+
+        // Ship space to world (the ship faces +Z, turned by pose.r).
+        const x = pose.x + (lx * c + lz * s) * k;
+        const z = pose.z + (-lx * s + lz * c) * k;
+
+        this.spawnDamageSmoke(x, z, pose.r);
     }
 
     createVisual(remote) {
         const THREE = this.THREE;
 
         let ship;
+        const last = remote.samples[remote.samples.length - 1];
+        const design = last?.design ?? 0;
+        const damage = Multiplayer.damageLevel(last?.hull ?? 3);
 
         try {
-            ship = this.createShipModel();
+            ship = this.createShipModel(design, damage);
         } catch {
             return null;
         }
@@ -1007,6 +1104,9 @@ export class Multiplayer {
         remote.visual = {
             group,
             ship,
+            design,
+            damage,
+            enginePivot,
             engine,
             bubble,
             label,

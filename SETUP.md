@@ -68,6 +68,18 @@ can award themselves points.
 - **Laser.** The beam reaches 60 units, a little past the edges of the screen,
   and hits exactly what is drawn, including anything that moves into it while
   it's visible.
+- **Ships.** Pilots pick one of four ships on the title (or game-over)
+  screen with ◀ / ▶ or the arrow keys; the choice is remembered:
+  - every ship has three looks that follow the hull bar: intact (green),
+    damaged (yellow: burns and a piece shot off) and critical (red: a wing
+    torn open, a dead engine, smoking)
+  - a destroyed ship blows apart in a fireball with a shockwave and flying
+    debris
+  - online, everyone sees each pilot's ship and its damage (the server passes
+    both along with the position)
+  - the models and the explosion are made by `blender/generate_ships.py`
+    (Blender or plain `python3`); any that are missing fall back to the
+    starfighter and the normal explosion.
 - **UFO visits.** Once or twice a round (once or twice per solo game, too) a
   flying saucer appears near a random pilot, watches for 9–14 seconds,
   following them if they fly off, and then leaves at an impossible speed:

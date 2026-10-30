@@ -182,6 +182,16 @@
             ONLINE: TOP SCORE AFTER 15:00 WINS
         </p>
 
+        <!-- Pick a ship (game.js: SHIP PICKER). -->
+        <div class="ship-picker" id="ship-picker">
+            <button id="ship-picker-prev" class="ship-arrow" type="button" aria-label="Previous ship">◀</button>
+            <div class="ship-card">
+                <img id="ship-picker-image" class="ship-image" src="assets/starfighter_preview.png" alt="STARFIGHTER" draggable="false">
+                <div id="ship-picker-name" class="ship-name">STARFIGHTER</div>
+            </div>
+            <button id="ship-picker-next" class="ship-arrow" type="button" aria-label="Next ship">▶</button>
+        </div>
+
         <button id="start-button" class="arcade-button" type="button">
             <span class="button-icon">▶</span>
             INSERT COIN
@@ -221,6 +231,12 @@
             </div>
 
             <div class="control-row">
+                <span class="keycap">◀</span>
+                <span class="keycap">▶</span>
+                <span class="control-description">CHOOSE SHIP</span>
+            </div>
+
+            <div class="control-row">
                 <span class="keycap">1</span>
                 <span class="keycap">2</span>
                 <span class="keycap">3</span>
@@ -250,6 +266,16 @@
         <div class="final-score-label">FINAL SCORE</div>
 
         <div id="final-score" class="final-score">000000</div>
+
+        <!-- Pick a ship (game.js: SHIP PICKER). -->
+        <div class="ship-picker" id="ship-picker-over">
+            <button id="ship-picker-over-prev" class="ship-arrow" type="button" aria-label="Previous ship">◀</button>
+            <div class="ship-card">
+                <img id="ship-picker-over-image" class="ship-image" src="assets/starfighter_preview.png" alt="STARFIGHTER" draggable="false">
+                <div id="ship-picker-over-name" class="ship-name">STARFIGHTER</div>
+            </div>
+            <button id="ship-picker-over-next" class="ship-arrow" type="button" aria-label="Next ship">▶</button>
+        </div>
 
         <button id="restart-button" class="arcade-button" type="button">
             <span class="button-icon">↻</span>

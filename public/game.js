@@ -18,7 +18,7 @@ import { UFO, createUfoPlan, ufoState, ufoFollow, ufoLeave, ufoZoomAt, readUfoPl
 // Missing elements (null) are not cached, so they can appear later.
 // Shown in the browser console at startup, so it is easy to confirm
 // which version of game.js the browser is actually running.
-const GAME_BUILD = "multiplayer-2-ufo";
+const GAME_BUILD = "multiplayer-2-fleet";
 window.ASTEROID_DEFENSE_BUILD = GAME_BUILD;
 
 const domCache = Object.create(null);
@@ -661,7 +661,24 @@ const assetFiles = {
     retroPuff: "retro_puff.glb",
 
     // Flying saucer (blender/generate_ufo.py)
-    ufo: "ufo.glb"
+    ufo: "ufo.glb",
+
+    // More ships to pick from, each intact / damaged / critical, and
+    // the ship explosion (blender/generate_ships.py)
+    starfighterDamaged: "starfighter_damaged.glb",
+    starfighterCritical: "starfighter_critical.glb",
+    shipViper: "ship_viper.glb",
+    shipViperDamaged: "ship_viper_damaged.glb",
+    shipViperCritical: "ship_viper_critical.glb",
+    shipWraith: "ship_wraith.glb",
+    shipWraithDamaged: "ship_wraith_damaged.glb",
+    shipWraithCritical: "ship_wraith_critical.glb",
+    shipHornet: "ship_hornet.glb",
+    shipHornetDamaged: "ship_hornet_damaged.glb",
+    shipHornetCritical: "ship_hornet_critical.glb",
+    shipExplosionFireball: "ship_explosion_fireball.glb",
+    shipExplosionRing: "ship_explosion_ring.glb",
+    shipDebris: "ship_debris.glb"
 };
 
 // Cosmetic extras: if one of these files is missing, the game still
@@ -671,7 +688,14 @@ const OPTIONAL_ASSETS = new Map([
     ["retroJet", "generate_retro_thrusters.py"],
     ["retroGlow", "generate_retro_thrusters.py"],
     ["retroPuff", "generate_retro_thrusters.py"],
-    ["ufo", "generate_ufo.py"]
+    ["ufo", "generate_ufo.py"],
+    ...[
+        "starfighterDamaged", "starfighterCritical",
+        "shipViper", "shipViperDamaged", "shipViperCritical",
+        "shipWraith", "shipWraithDamaged", "shipWraithCritical",
+        "shipHornet", "shipHornetDamaged", "shipHornetCritical",
+        "shipExplosionFireball", "shipExplosionRing", "shipDebris"
+    ].map((key) => [key, "generate_ships.py"])
 ]);
 
 function loadGLB(filename) {
@@ -994,6 +1018,14 @@ window.addEventListener("keydown", (event) => {
     ) {
         launchGame();
     }
+
+    // Browse ships on the title and game-over screens.
+    if (!state.running && (event.code === "ArrowLeft" || event.code === "ArrowRight")) {
+        const menu = !$("start-screen").classList.contains("hidden") ||
+            !$("game-over").classList.contains("hidden");
+
+        if (menu) cycleShip(event.code === "ArrowLeft" ? -1 : 1);
+    }
 });
 
 window.addEventListener("keyup", (event) => {
@@ -1199,7 +1231,10 @@ const state = {
     damageCooldown: 0,
 
     screenShake: 0,
-    restartTimer: null
+    restartTimer: null,
+
+    // The game-over screen waiting for the ship's explosion.
+    gameOverTimer: null
 };
 
 // Writing to localStorage on every point scored is a synchronous disk
@@ -1244,6 +1279,9 @@ function updateHUD() {
     $("sector").textContent = String(state.sector).padStart(2, "0");
 
     updateHullBar();
+
+    // The ship shows its damage.
+    updateShipModel();
 }
 
 // ------------------------------------------------------------
@@ -1347,7 +1385,16 @@ function createPlayer() {
         scene.remove(player.mesh);
     }
 
-    player.mesh = cloneModel("ship");
+    // The ship is a holder for the hull model (which changes with the
+    // chosen design and with damage) and the engine effects.
+    player.mesh = new THREE.Group();
+    player.mesh.name = "PlayerShip";
+
+    ships.shownDesign = currentDesign();
+    ships.shownDamage = damageLevel(state.lives);
+    player.hull = createShipModel(ships.shownDesign, ships.shownDamage);
+    player.mesh.add(player.hull);
+
     player.mesh.position.copy(player.position);
     player.mesh.position.y = 0.3;
 
@@ -1368,6 +1415,506 @@ function createPlayer() {
 
     // And the reverse thrusters near the nose.
     createRetroThrusters();
+}
+
+// ------------------------------------------------------------
+// SHIP DESIGNS AND BATTLE DAMAGE
+// Four ships to choose from on the title screen (the choice is
+// remembered). Each has three models (blender/generate_ships.py):
+// intact, damaged (hull bar yellow: scorched, a piece shot off) and
+// critical (hull bar red: a wing torn open, a dead engine, smoking).
+// Every design keeps the starfighter's engine positions, so the
+// afterburner and reverse jets fit all of them.
+// Online, other pilots see your design and its damage (the server
+// passes both along with your position).
+// ------------------------------------------------------------
+
+const SHIP_DESIGNS = [
+    {
+        key: "starfighter",
+        name: "STARFIGHTER",
+        color: "#e9e4d6",
+        models: ["ship", "starfighterDamaged", "starfighterCritical"],
+        preview: "assets/starfighter_preview.png",
+        // Where it smokes when critical (ship space: x, y up, z forward).
+        smoke: [[-0.72, 0.08, -0.32], [-0.42, 0.1, -0.8]]
+    },
+    {
+        key: "viper",
+        name: "VIPER",
+        color: "#ff3b4e",
+        models: ["shipViper", "shipViperDamaged", "shipViperCritical"],
+        preview: "assets/ship_viper_preview.png",
+        smoke: [[0.8, 0.08, -0.4], [0.42, 0.1, -0.72]]
+    },
+    {
+        key: "wraith",
+        name: "WRAITH",
+        color: "#2ff3df",
+        models: ["shipWraith", "shipWraithDamaged", "shipWraithCritical"],
+        preview: "assets/ship_wraith_preview.png",
+        smoke: [[-0.8, 0.08, -0.25], [-0.42, 0.08, -0.68]]
+    },
+    {
+        key: "hornet",
+        name: "HORNET",
+        color: "#ffd23f",
+        models: ["shipHornet", "shipHornetDamaged", "shipHornetCritical"],
+        preview: "assets/ship_hornet_preview.png",
+        smoke: [[0.66, 0.08, -0.2], [0.42, 0.1, -0.88]]
+    }
+];
+
+const SHIP_CHOICE_KEY = "asteroidDefenseShip";
+
+const ships = {
+    // Index into SHIP_DESIGNS.
+    selected: loadShipChoice(),
+
+    // What the player's ship currently shows: design and damage.
+    shownDesign: -1,
+    shownDamage: -1,
+
+    smokeClock: 0,
+    sparkClock: 0
+};
+
+function loadShipChoice() {
+    try {
+        const key = localStorage.getItem(SHIP_CHOICE_KEY);
+        const index = SHIP_DESIGNS.findIndex((d) => d.key === key);
+        return index >= 0 ? index : 0;
+    } catch {
+        return 0;
+    }
+}
+
+function saveShipChoice() {
+    try {
+        localStorage.setItem(SHIP_CHOICE_KEY, SHIP_DESIGNS[ships.selected].key);
+    } catch {
+        // Private browsing: just not remembered.
+    }
+}
+
+// Designs whose intact model loaded (the starfighter always counts).
+function designAvailable(index) {
+    const design = SHIP_DESIGNS[index];
+    return Boolean(design) && (index === 0 || Boolean(assets[design.models[0]]) || state.loading);
+}
+
+// The design the player flies (falling back to the starfighter if
+// the chosen one's models are missing).
+function currentDesign() {
+    return designAvailable(ships.selected) ? ships.selected : 0;
+}
+
+// 0 = intact, 1 = damaged (yellow), 2 = critical (red).
+function damageLevel(hull) {
+    return hull >= 3 ? 0 : hull === 2 ? 1 : 2;
+}
+
+// A new model of a design in a state of damage. Missing damage models
+// fall back to the less damaged ones, then to the starfighter.
+function createShipModel(designIndex = 0, damage = 0) {
+    const design = SHIP_DESIGNS[designIndex] ?? SHIP_DESIGNS[0];
+
+    for (let level = damage; level >= 0; level--) {
+        if (assets[design.models[level]]) return cloneModel(design.models[level]);
+    }
+
+    return cloneModel("ship");
+}
+
+// Show the right model on the player's ship for the chosen design and
+// the current hull. Called whenever the hull display updates.
+function updateShipModel() {
+    if (!player.mesh || !player.hull) return;
+
+    const design = currentDesign();
+    const damage = damageLevel(state.lives);
+
+    if (design === ships.shownDesign && damage === ships.shownDamage) return;
+
+    const model = createShipModel(design, damage);
+
+    player.mesh.remove(player.hull);
+    player.mesh.add(model);
+    player.hull = model;
+
+    ships.shownDesign = design;
+    ships.shownDamage = damage;
+}
+
+// Thick, dark smoke from damaged ships (yours and other pilots'). Its
+// own puffs, darker and bigger than rocket smoke, rising and trailing.
+const damageSmoke = { puffs: [], pool: [] };
+
+function spawnDamageSmoke(x, z, heading) {
+    if (!assets.smokePuff) return;
+
+    let mesh = damageSmoke.pool.pop();
+
+    if (!mesh) {
+        mesh = cloneModel("smokePuff");
+        ownMaterials(mesh);
+
+        mesh.traverse((child) => {
+            if (!child.isMesh) return;
+
+            child.material.color?.set?.(0x5a5a64);
+            child.material.emissive?.set?.(0x000000);
+            child.material.transparent = true;
+            child.material.depthWrite = false;
+        });
+
+        scene.add(mesh);
+    }
+
+    mesh.visible = true;
+    mesh.position.set(x + randomRange(-0.1, 0.1), 0.5, z + randomRange(-0.1, 0.1));
+    mesh.rotation.set(randomRange(0, 6.28), randomRange(0, 6.28), 0);
+    mesh.scale.setScalar(0.2);
+
+    // Drifts back from the ship as it flies on.
+    const back = randomRange(0.6, 1.2);
+    const side = randomRange(-0.5, 0.5);
+
+    damageSmoke.puffs.push({
+        mesh,
+        age: 0,
+        life: randomRange(1.1, 1.6),
+        size: randomRange(0.55, 0.85),
+        vx: -Math.sin(heading) * back + Math.cos(heading) * side,
+        vz: -Math.cos(heading) * back - Math.sin(heading) * side,
+        spin: randomRange(-1.5, 1.5)
+    });
+}
+
+function updateDamageSmoke(dt) {
+    const puffs = damageSmoke.puffs;
+
+    for (let i = puffs.length - 1; i >= 0; i--) {
+        const puff = puffs[i];
+        puff.age += dt;
+
+        const k = puff.age / puff.life;
+
+        if (k >= 1) {
+            puff.mesh.visible = false;
+            damageSmoke.pool.push(puff.mesh);
+            puffs.splice(i, 1);
+            continue;
+        }
+
+        puff.mesh.position.x += puff.vx * dt;
+        puff.mesh.position.z += puff.vz * dt;
+        puff.mesh.position.y += dt * 0.4;
+        puff.mesh.rotation.z += puff.spin * dt;
+        puff.mesh.scale.setScalar(0.2 + puff.size * Math.sqrt(k));
+
+        const opacity = 0.8 * (1 - k) * Math.min(1, k * 6);
+        puff.mesh.traverse((child) => { if (child.isMesh) child.material.opacity = opacity; });
+    }
+}
+
+function clearDamageSmoke() {
+    for (const puff of damageSmoke.puffs) {
+        puff.mesh.visible = false;
+        damageSmoke.pool.push(puff.mesh);
+    }
+
+    damageSmoke.puffs.length = 0;
+}
+
+// Damage effects on your ship: yellow, the odd spark from the broken
+// wing; red, smoke pouring from the wounds and more sparks.
+function updateShipDamageEffects(dt) {
+    updateDamageSmoke(dt);
+
+    if (!state.running || !player.mesh || !player.mesh.visible) return;
+    if (net.active && net.dead) return;
+    if (blackHole.active || ships.shownDamage < 1) return;
+
+    const points = SHIP_DESIGNS[ships.shownDesign]?.smoke ?? [];
+    if (points.length === 0) return;
+
+    ships.smokeClock -= dt;
+    ships.sparkClock -= dt;
+
+    const heading = player.mesh.rotation.y;
+    const c = Math.cos(heading);
+    const s = Math.sin(heading);
+
+    const toWorld = ([lx, , lz]) => ({
+        x: player.position.x + (lx * c + lz * s) * SHIP_DISPLAY_SCALE,
+        z: player.position.z + (-lx * s + lz * c) * SHIP_DISPLAY_SCALE
+    });
+
+    const critical = ships.shownDamage >= 2;
+
+    if (critical && ships.smokeClock <= 0) {
+        ships.smokeClock = 0.06;
+
+        const p = toWorld(points[Math.floor(Math.random() * points.length)]);
+        spawnDamageSmoke(p.x, p.z, heading);
+    }
+
+    if (ships.sparkClock <= 0) {
+        ships.sparkClock = critical ? randomRange(0.4, 0.9) : randomRange(1.2, 2.4);
+
+        const p = toWorld(points[0]);
+        createExplosion(new THREE.Vector3(p.x, 0.4, p.z), 0.12, critical ? 4 : 2);
+    }
+}
+
+// ------------------------------------------------------------
+// SHIP PICKER (title and game-over screens)
+// ◀ / ▶ (or the arrow keys on the title screen) browse the ships.
+// ------------------------------------------------------------
+
+const SHIP_PICKERS = ["ship-picker", "ship-picker-over"];
+
+function setupShipPickers() {
+    for (const id of SHIP_PICKERS) {
+        const picker = $(id);
+        if (!picker) continue;
+
+        $(`${id}-prev`)?.addEventListener("click", () => cycleShip(-1));
+        $(`${id}-next`)?.addEventListener("click", () => cycleShip(1));
+
+        const image = $(`${id}-image`);
+
+        // No preview image (not generated yet): just the name.
+        image?.addEventListener("error", () => { image.style.visibility = "hidden"; });
+        image?.addEventListener("load", () => { image.style.visibility = ""; });
+    }
+
+    renderShipPickers();
+}
+
+function cycleShip(direction) {
+    const count = SHIP_DESIGNS.length;
+    let index = ships.selected;
+
+    for (let i = 0; i < count; i++) {
+        index = (index + direction + count) % count;
+        if (designAvailable(index)) break;
+    }
+
+    ships.selected = index;
+    saveShipChoice();
+    renderShipPickers();
+
+    // On the game-over screen behind a solo game, or in a menu: the
+    // ship shown updates now (or at the next start).
+    updateShipModel();
+}
+
+function renderShipPickers() {
+    const design = SHIP_DESIGNS[currentDesign()];
+
+    for (const id of SHIP_PICKERS) {
+        const name = $(`${id}-name`);
+        const image = $(`${id}-image`);
+
+        if (name && name.textContent !== design.name) {
+            name.textContent = design.name;
+            name.style.color = design.color;
+        }
+
+        if (image && image.getAttribute?.("src") !== design.preview) {
+            image.setAttribute?.("src", design.preview);
+            image.alt = design.name;
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// SHIP EXPLOSION
+// When a ship is destroyed: a white-hot flash, a three-layer fireball,
+// a shockwave ring in the ship's color, hull shards flung out with
+// glowing edges, and a shower of sparks. Plays for any ship, yours or
+// another pilot's, and keeps playing behind the game-over screen.
+// Models: blender/generate_ships.py (if they're missing, a larger
+// version of the normal explosion plays instead).
+// ------------------------------------------------------------
+
+const SHIP_EXPLOSION = {
+    life: 1.7,
+    height: 0.6,
+
+    // Fireball layers: [grow time, fade time, final scale, peak opacity]
+    core: [0.3, 0.5, 1.6, 1.0],
+    mid: [0.55, 0.85, 2.4, 0.9],
+    outer: [0.85, 1.2, 3.3, 0.75],
+
+    ringTime: 0.65,
+    ringScale: 7.5,
+
+    debrisSpeed: [5, 11],
+    debrisFadeAt: 0.9
+};
+
+const shipExplosions = [];
+
+// Bright, see-through glow versions of a model's materials (the
+// fireball and ring), tinted `tint` if given.
+function glowMaterials(model, tint = null) {
+    const materials = [];
+
+    model.traverse((child) => {
+        if (!child.isMesh) return;
+
+        const source = child.material;
+        const color = tint
+            ? new THREE.Color(tint)
+            : (source.emissive?.clone?.() ?? source.color?.clone?.() ?? new THREE.Color(0xffaa55));
+
+        const material = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            toneMapped: false,
+            fog: false
+        });
+
+        child.material = material;
+        materials.push(material);
+    });
+
+    return materials;
+}
+
+function createShipExplosion(position, designIndex = 0, own = false) {
+    const x = position.x;
+    const z = position.z;
+    const color = SHIP_DESIGNS[designIndex]?.color ?? "#ffffff";
+
+    // Sparks and the white flash.
+    createExplosion(new THREE.Vector3(x, 0.4, z), 2.4, 36);
+
+    const near = Math.hypot(x - player.position.x, z - player.position.z);
+    if (own || near < 22) state.screenShake = Math.max(state.screenShake, own ? 0.8 : 0.4);
+
+    if (!assets.shipExplosionFireball || !assets.shipExplosionRing) return;
+
+    const group = new THREE.Group();
+    group.name = "ShipExplosion";
+    group.position.set(x, SHIP_EXPLOSION.height, z);
+    scene.add(group);
+
+    const effect = { group, age: 0, layers: [], ring: null, debris: [], materials: [] };
+
+    // Fireball: each layer grows and fades at its own pace.
+    const fireball = cloneModel("shipExplosionFireball");
+    group.add(fireball);
+
+    for (const key of ["core", "mid", "outer"]) {
+        const layer = fireball.getObjectByName?.(key) ?? null;
+        if (!layer) continue;
+
+        effect.materials.push(...glowMaterials(layer));
+        layer.scale.setScalar(0.1);
+        layer.rotation.y = Math.random() * Math.PI * 2;
+        effect.layers.push({ mesh: layer, timing: SHIP_EXPLOSION[key], spin: randomRange(-1.5, 1.5) });
+    }
+
+    // Shockwave ring, tinted with the ship's color.
+    const ring = cloneModel("shipExplosionRing");
+    effect.materials.push(...glowMaterials(ring, color));
+    ring.position.y = -0.3;
+    ring.scale.setScalar(0.3);
+    group.add(ring);
+    effect.ring = ring;
+
+    // Hull shards, flung outward.
+    if (assets.shipDebris) {
+        const source = assets.shipDebris;
+
+        for (const piece of source.children) {
+            const shard = piece.clone(true);
+            ownMaterials(shard);
+
+            shard.traverse((child) => {
+                if (!child.isMesh) return;
+                child.material.transparent = true;
+                effect.materials.push(child.material);
+            });
+
+            const angle = Math.random() * Math.PI * 2;
+            const speed = randomRange(...SHIP_EXPLOSION.debrisSpeed);
+
+            shard.position.set(0, 0, 0);
+            shard.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
+            group.add(shard);
+
+            effect.debris.push({
+                mesh: shard,
+                vx: Math.cos(angle) * speed,
+                vz: Math.sin(angle) * speed,
+                spinX: randomRange(-8, 8),
+                spinY: randomRange(-8, 8)
+            });
+        }
+    }
+
+    shipExplosions.push(effect);
+}
+
+function updateShipExplosions(dt) {
+    for (let i = shipExplosions.length - 1; i >= 0; i--) {
+        const effect = shipExplosions[i];
+        effect.age += dt;
+
+        const t = effect.age;
+
+        for (const { mesh, timing, spin } of effect.layers) {
+            const [grow, fade, size, peak] = timing;
+            const k = Math.min(1, t / grow);
+            const eased = 1 - Math.pow(1 - k, 3);
+
+            mesh.scale.setScalar(0.1 + (size - 0.1) * eased);
+            mesh.rotation.y += spin * dt;
+
+            const opacity = t < fade ? peak * (1 - Math.pow(t / fade, 2)) : 0;
+            mesh.traverse((child) => { if (child.isMesh) child.material.opacity = opacity; });
+        }
+
+        if (effect.ring) {
+            const k = Math.min(1, t / SHIP_EXPLOSION.ringTime);
+            const eased = 1 - Math.pow(1 - k, 2);
+
+            effect.ring.scale.setScalar(0.3 + (SHIP_EXPLOSION.ringScale - 0.3) * eased);
+            effect.ring.traverse((child) => { if (child.isMesh) child.material.opacity = 0.95 * (1 - k); });
+        }
+
+        const fade = t < SHIP_EXPLOSION.debrisFadeAt
+            ? 1
+            : Math.max(0, 1 - (t - SHIP_EXPLOSION.debrisFadeAt) / (SHIP_EXPLOSION.life - SHIP_EXPLOSION.debrisFadeAt));
+
+        for (const shard of effect.debris) {
+            const drag = Math.max(0, 1 - dt * 1.6);
+
+            shard.vx *= drag;
+            shard.vz *= drag;
+            shard.mesh.position.x += shard.vx * dt;
+            shard.mesh.position.z += shard.vz * dt;
+            shard.mesh.rotation.x += shard.spinX * dt;
+            shard.mesh.rotation.y += shard.spinY * dt;
+
+            shard.mesh.traverse((child) => { if (child.isMesh) child.material.opacity = fade; });
+        }
+
+        if (t >= SHIP_EXPLOSION.life) {
+            scene.remove(effect.group);
+            for (const material of effect.materials) material.dispose?.();
+            shipExplosions.splice(i, 1);
+        }
+    }
 }
 
 // ------------------------------------------------------------
@@ -7711,7 +8258,16 @@ function damagePlayer() {
     showDamageFeedback();
 
     if (state.lives <= 0) {
-        endGame();
+        // The ship blows apart; the game-over screen follows once the
+        // explosion has had a moment.
+        createShipExplosion(player.position, currentDesign(), true);
+
+        if (player.mesh) player.mesh.visible = false;
+
+        setAfterburnersActive(false);
+        setRetroThrustersActive(false);
+
+        endGame(1300);
     } else {
         $("message").textContent = "WARNING: HULL DAMAGED";
     }
@@ -8038,6 +8594,9 @@ function resetGame() {
     // No UFO, and new solo visits to come.
     resetUfo();
 
+    // No smoke left from a damaged ship.
+    clearDamageSmoke();
+
     // Reset input state.
     firing = false;
     pointerSteering = false;
@@ -8049,6 +8608,10 @@ function resetGame() {
     }
 
     steeringMode = "mouse";
+
+    // A game-over screen still waiting to appear.
+    clearTimeout(state.gameOverTimer);
+    state.gameOverTimer = null;
 
     // Cancel a pending automatic restart.
     if (state.restartTimer !== null) {
@@ -8168,7 +8731,9 @@ function startGame() {
     }
 }
 
-function endGame() {
+// delayMs: wait before showing the game-over screen (to let the
+// ship's explosion play).
+function endGame(delayMs = 0) {
     state.running = false;
     state.gameOver = true;
 
@@ -8180,7 +8745,16 @@ function endGame() {
     $("final-score").textContent =
         String(state.score).padStart(6, "0");
 
-    $("game-over").classList.remove("hidden");
+    clearTimeout(state.gameOverTimer);
+    state.gameOverTimer = null;
+
+    const show = () => {
+        state.gameOverTimer = null;
+        if (state.gameOver && !state.running) $("game-over").classList.remove("hidden");
+    };
+
+    if (delayMs > 0) state.gameOverTimer = setTimeout(show, delayMs);
+    else show();
 
     // Nothing schedules an automatic restart, so the old
     // "RESTARTING IN 5 SECONDS" text was misleading.
@@ -8419,6 +8993,13 @@ function render() {
     // ship's state is sent).
     updateUfo(dt);
 
+    // Ship explosions keep playing after the game ends; so do sparks.
+    updateShipExplosions(dt);
+    if (!state.running) updateEffects(dt);
+
+    // Smoke from a badly damaged ship.
+    updateShipDamageEffects(dt);
+
     // Send this ship's state to the lobby and move the other pilots'
     // ships. (The module catches its own errors, so this can never
     // stop the frame.)
@@ -8499,7 +9080,8 @@ function getNetworkState() {
         vz: player.velocity.z,
         thrust: afterburners.active ? 1 : retroThrusters.active ? -1 : 0,
         life: net.life,
-        weapon: currentWeapon().net
+        weapon: currentWeapon().net,
+        design: currentDesign()
     };
 }
 
@@ -8695,8 +9277,7 @@ function netShipDestroyed(killerId) {
     setAfterburnersActive(false);
     setRetroThrustersActive(false);
 
-    createExplosion(player.position.clone(), 1.6, 24);
-    state.screenShake = 0.6;
+    createShipExplosion(player.position, currentDesign(), true);
 
     if (player.mesh) player.mesh.visible = false;
 
@@ -9138,7 +9719,7 @@ function applyNetEvent(e, lag) {
             if (netSelf(e[1])) {
                 netShipDestroyed(e[2] || null);
             } else {
-                createExplosion(point(e[3], e[4]), 1.6, 24);
+                createShipExplosion(point(e[3], e[4]), multiplayer?.designOf(e[1]) ?? 0);
 
                 if (netSelf(e[2])) {
                     $("message").textContent = `${netName(e[1])} DESTROYED · +2,500`;
@@ -9423,11 +10004,17 @@ function showRoundResults() {
 
     panel.classList.remove("hidden");
 
+    // The results replace the HUD while they're up: the HUD's own
+    // scores, leaderboard and clock showed through the see-through
+    // panel, repeating numbers and running into the middle of it.
+    document.body?.classList?.add("results-open");
+
     updateRoundHUD();
 }
 
 function hideRoundResults() {
     $("round-results")?.classList.add("hidden");
+    document.body?.classList?.remove("results-open");
 }
 
 // ------------------------------------------------------------
@@ -9710,7 +10297,9 @@ function startMultiplayer() {
 
                 // These throw until the models have loaded; the module
                 // simply tries again on a later frame.
-                createShipModel: () => cloneModel("ship"),
+                createShipModel: (design, damage) => createShipModel(design, damage),
+                smokePoints: (design) => SHIP_DESIGNS[design]?.smoke ?? [],
+                spawnDamageSmoke: (x, z, heading) => spawnDamageSmoke(x, z, heading),
                 createRocketModel,
                 createWarpLens,
                 spawnSmoke: (x, z, heading) => spawnSmokePuff(x, z, heading),
@@ -9794,6 +10383,9 @@ async function boot() {
 
         $("message").textContent = "READY FOR LAUNCH";
 
+        // Ships whose models are missing drop out of the picker.
+        renderShipPickers();
+
         console.info(`ASTEROID DEFENSE ready (build ${GAME_BUILD}).`);
 
         // The title screen now waits for INSERT COIN (launchGame).
@@ -9826,6 +10418,9 @@ async function boot() {
         document.body.appendChild(errorMessage);
     }
 }
+
+// The ship pickers on the title and game-over screens.
+setupShipPickers();
 
 // Join a lobby right away, while the models load.
 startMultiplayer();

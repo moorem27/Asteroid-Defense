@@ -53,6 +53,7 @@ export const __test = {
     getNetworkState,
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     ufo, UFO, ufoState, ufoNow,
+    ships, SHIP_DESIGNS, shipExplosions, smokePuffs, damageSmoke, cycleShip, updateHUD, damagePlayer,
     get multiplayer() { return multiplayer; }
 };
 `;
@@ -393,6 +394,7 @@ test("round end: black hole finale, results screen, then a fresh round", async (
     }, 8000, "results shown");
 
     assert.match(dom.el("results-winner").innerHTML, /YOU WIN/);
+    assert.ok(document.body.classList.contains("results-open"), "HUD steps aside for the results");
     assert.match(dom.el("results-list").innerHTML, /1,500/);
     assert.equal(dom.el("match-label").textContent, "NEXT ROUND");
 
@@ -411,6 +413,7 @@ test("round end: black hole finale, results screen, then a fresh round", async (
 
     assert.equal(dom.el("round-results").classList.contains("hidden"), true);
     assert.equal(t.state.score, 0);
+    assert.ok(!document.body.classList.contains("results-open"), "HUD back");
     assert.equal(t.blackHole.active, false);
     assert.equal(dom.el("sector").textContent, "02");
 
@@ -1026,6 +1029,147 @@ test("UFO (online): the server's visit is drawn, shots are absorbed, and it leav
     // The round ends: it leaves (everyone is told).
     lobby.round.endsAt = Date.now();
     await waitFor(() => Number.isFinite(t.ufo.plan?.f) || !t.ufo.plan, 2000, "told to leave");
+
+    stopGames();
+});
+
+// ---- Ship designs, damage and explosions ---------------------------
+
+test("ships: pick a design on the title screen (remembered); the ship shows damage as the hull drops", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => !t.state.loading, 3000, "models loaded");
+
+    assert.equal(dom.el("ship-picker-name").textContent, "STARFIGHTER");
+
+    // Next ship with the ▶ button, and again with the arrow key.
+    dom.el("ship-picker-next").dispatch("click");
+    assert.equal(dom.el("ship-picker-name").textContent, "VIPER");
+    dom.key("keydown", "ArrowRight");
+    assert.equal(dom.el("ship-picker-name").textContent, "WRAITH");
+    dom.key("keydown", "ArrowLeft");
+    assert.equal(dom.el("ship-picker-name").textContent, "VIPER");
+    assert.match(dom.el("ship-picker-image").getAttribute?.("src") ?? dom.el("ship-picker-image").src ?? "", /viper/);
+    assert.equal(localStorage.getItem("asteroidDefenseShip"), "viper", "remembered");
+
+    dom.el("start-button").dispatch("click");
+    await play(game, 100);
+
+    assert.equal(t.player.hull.name, "assets/ship_viper.glb", "flying the Viper");
+
+    // Yellow: damaged model.  Red: critical model, smoking.
+    t.state.lives = 2;
+    t.updateHUD();
+    assert.equal(t.player.hull.name, "assets/ship_viper_damaged.glb");
+
+    t.state.lives = 1;
+    t.updateHUD();
+    assert.equal(t.player.hull.name, "assets/ship_viper_critical.glb");
+
+    t.state.spawnTimer = 1e9;
+    t.asteroids.length = 0;
+    await play(game, 400);
+    assert.ok(t.damageSmoke.puffs.length > 3, "smoking");
+
+    // Repaired (a crystal): back to a whole ship.
+    t.state.lives = 3;
+    t.updateHUD();
+    assert.equal(t.player.hull.name, "assets/ship_viper.glb");
+
+    stopGames();
+});
+
+test("ships: a missing design falls back to the starfighter; missing damage models fall back too", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    globalThis.__missingModels = new Set(["assets/ship_hornet.glb", "assets/ship_wraith_critical.glb", "assets/ship_wraith_damaged.glb"]);
+
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => !t.state.loading, 3000, "models loaded");
+    globalThis.__missingModels = null;
+
+    // Chosen on an earlier visit, but its model is missing now.
+    t.ships.selected = 3;
+    dom.el("start-button").dispatch("click");
+    await play(game, 50);
+
+    assert.equal(t.player.hull.name, "assets/starfighter.glb", "starfighter instead of the missing Hornet");
+
+    t.ships.selected = 0;
+    t.cycleShip(1); // Viper
+    t.cycleShip(1); // Wraith
+    assert.equal(dom.el("ship-picker-name").textContent, "WRAITH");
+    t.cycleShip(1); // Hornet is missing: skipped, back to the Starfighter
+    assert.equal(dom.el("ship-picker-name").textContent, "STARFIGHTER");
+
+    t.cycleShip(-1); // Wraith
+    t.state.lives = 1;
+    t.updateHUD();
+    assert.equal(t.player.hull.name, "assets/ship_wraith.glb", "no critical model: the intact one");
+
+    stopGames();
+});
+
+test("ships: destroyed in a solo game, the ship explodes, then the game-over screen appears", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+
+    t.state.lives = 1;
+    t.state.damageCooldown = 0;
+    t.damagePlayer();
+
+    assert.equal(t.state.running, false);
+    assert.equal(t.shipExplosions.length, 1, "big explosion");
+    assert.equal(t.player.mesh.visible, false, "ship gone");
+    assert.ok(dom.el("game-over").classList.contains("hidden"), "game-over waits for the explosion");
+
+    await play(game, 900);
+    assert.ok(t.shipExplosions[0].age > 0.5, "the explosion keeps playing");
+
+    await play(game, 700);
+    assert.ok(!dom.el("game-over").classList.contains("hidden"), "then the game-over screen");
+
+    await play(game, 600);
+    assert.equal(t.shipExplosions.length, 0, "and it cleans up");
+
+    stopGames();
+});
+
+test("ships (online): your design goes to the server; the server shares design and hull", async () => {
+    const server = await loadWorker();
+
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => !t.state.loading, 3000, "models loaded");
+    t.cycleShip(1);
+    t.cycleShip(1); // Wraith
+    dom.el("start-button").dispatch("click");
+
+    await waitFor(() => t.net.active, 3000, "online");
+    await play(game, 400);
+
+    assert.equal(t.getNetworkState().design, 2);
+    await waitFor(() => serverShip(game).design === 2, 2000, "server knows the design");
+
+    const lobby = quietLobby(server);
+    serverShip(game).hull = 1;
+
+    const snap = lobby.snapshotMessage(Date.now()).p.find((p) => String(p[0]) === t.multiplayer.selfId);
+    assert.equal(snap[9], 2, "design in the snapshot");
+    assert.equal(snap[10], 1, "hull in the snapshot");
 
     stopGames();
 });

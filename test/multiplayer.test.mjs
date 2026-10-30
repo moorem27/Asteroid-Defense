@@ -1431,6 +1431,54 @@ test("client: server unreachable → offline, harmless calls, joins when it retu
     shutdownAll();
 });
 
+test("client: other pilots' ships show their chosen design and damage, and smoke when critical", async () => {
+    const server = await loadWorker();
+
+    const made = [];
+    const smoke = [];
+
+    const a = makeClient(server, "ALPHA", {
+        createShipModel: (design, damage) => {
+            made.push([design, damage]);
+            const ship = makeShip();
+            ship.kind = `${design}:${damage}`;
+            return ship;
+        },
+        smokePoints: () => [[0.5, 0.1, -0.3]],
+        spawnSmoke: (x, z) => smoke.push([x, z])
+    });
+    const b = makeClient(server, "BRAVO");
+
+    await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "roster");
+    unshield(server.lobbies()[0].instance);
+
+    const bLife = () => b.calls.online[0].you.lf;
+    const frames = (ms) => runFrames([
+        [a, { playing: true, x: 0, z: 0, r: 0, life: 1, weapon: 0 }],
+        [b, () => ({ playing: true, x: 5, z: 0, r: 0, life: bLife(), weapon: 0, design: 3 })]
+    ], ms);
+
+    await frames(500);
+
+    const remote = [...a.remotes.values()][0];
+    assert.equal(remote.visual.ship.kind, "3:0", "the Hornet, intact");
+
+    const shipB = shipOf(server.lobbies()[0].instance, { id: b.selfId });
+
+    shipB.hull = 2;
+    await frames(300);
+    assert.equal(remote.visual.ship.kind, "3:1", "damaged");
+
+    shipB.hull = 1;
+    await frames(400);
+    assert.equal(remote.visual.ship.kind, "3:2", "critical");
+    assert.ok(smoke.length > 0, "smoking");
+    assert.ok(remote.visual.group.children.includes(remote.visual.ship), "one ship model in the group");
+    assert.equal(a.designOf(b.selfId), 3);
+
+    shutdownAll();
+});
+
 test("client: other pilots' ships interpolate, hide when destroyed, show warp", async () => {
     setNetworkDelay(30);
 
@@ -1579,7 +1627,9 @@ test("client: the smoothing delay adapts to the connection (small when steady, l
         server = await loadWorker();
         a = makeClient(server, "ALPHA");
         b = makeClient(server, "BRAVO");
-        await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "online");
+
+        // Joining over a jittery connection can take a retry or two.
+        await waitFor(() => a.remotes.size === 1 && b.isOnline(), 8000, "online");
         await runFrames([[a, local(a, 0, 0)], [b, local(b, 5, 5)]], 2000);
 
         const jittery = a.renderDelay();

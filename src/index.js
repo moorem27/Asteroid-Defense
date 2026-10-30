@@ -127,6 +127,9 @@ const SHIP = {
 
 const WEAPON = { BLASTER: 0, LASER: 1, ROCKETS: 2 };
 
+// How many ship designs pilots can pick from (SHIP_DESIGNS in game.js).
+const SHIP_DESIGNS = 4;
+
 const BULLET = {
     speed: 31,
     life: 1.15,
@@ -969,6 +972,7 @@ export class Lobby extends DurableObject {
             th: 0,
             st: 0,
             weapon: 0,
+            design: 0,
             stateAt: now,
 
             // Increases on every (re)spawn; position reports from an
@@ -1108,6 +1112,9 @@ export class Lobby extends DurableObject {
 
         ship.st = Math.round(finite(data.st, 0, 2) ?? 0);
         ship.weapon = Math.round(finite(data.w, 0, 2) ?? 0);
+
+        // Which ship design this pilot flies (0 = starfighter).
+        ship.design = Math.round(finite(data.d, 0, SHIP_DESIGNS - 1) ?? 0);
 
         // While dead, the ship stays where it was destroyed.
         if (!ship.alive) return;
@@ -2475,7 +2482,9 @@ export class Lobby extends DurableObject {
             // reported (reports arrive unevenly).
             const p = s.alive ? this.shipPosition(s, now) : s;
 
-            players.push([s.id, round2(p.x), round2(p.z), s.r, s.vx, s.vz, s.th, flags, s.weapon]);
+            // ... then the ship design and hull, so others can draw the
+            // right ship in the right state of damage.
+            players.push([s.id, round2(p.x), round2(p.z), s.r, s.vx, s.vz, s.th, flags, s.weapon, s.design ?? 0, s.hull]);
         }
 
         const rockets = this.rockets.map((r) => [

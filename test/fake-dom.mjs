@@ -33,6 +33,9 @@ class FakeElement {
         };
     }
 
+    setAttribute(name, value) { (this.attributes ??= {})[name] = String(value); }
+    getAttribute(name) { return this.attributes?.[name] ?? null; }
+
     addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
     removeEventListener() {}
 

@@ -86,6 +86,17 @@ export class Object3D {
         for (const c of [...this.children]) c.traverse(fn);
     }
 
+    getObjectByName(name) {
+        if (this.name === name) return this;
+
+        for (const c of this.children) {
+            const found = c.getObjectByName(name);
+            if (found) return found;
+        }
+
+        return undefined;
+    }
+
     clone(recursive = true) {
         const copy = this.cloneSelf();
         copy.position.copy(this.position);
