@@ -282,14 +282,15 @@ export class Multiplayer {
         return this.roster.get(String(id))?.color ?? "#ffffff";
     }
 
-    // Where the other pilots' ships are drawn (for bullet sparks).
+    // Where the other pilots' ships are drawn (for bullet sparks and the
+    // radar). `warp` is true while that pilot's warp bubble is up.
     remoteShipPositions() {
         const list = [];
 
         for (const remote of this.remotes.values()) {
             const g = remote.visual?.group;
             if (g && g.visible) {
-                list.push({ id: remote.id, x: g.position.x, z: g.position.z, ally: this.isTeammate(remote.id) });
+                list.push({ id: remote.id, x: g.position.x, z: g.position.z, ally: this.isTeammate(remote.id), warp: Boolean(remote.visual.bubble?.visible) });
             }
         }
 

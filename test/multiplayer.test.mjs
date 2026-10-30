@@ -1654,6 +1654,40 @@ test("clans (client): teammates are recognized by tag, so your shots pass their 
     shutdownAll();
 });
 
+test("client: a ship inside a warp bubble is flagged (so the radar leaves it off)", async () => {
+    const server = await loadWorker();
+
+    const a = makeClient(server, "ALPHA");
+    const b = makeClient(server, "BRAVO");
+    const c = makeClient(server, "CHARLIE");
+
+    await waitFor(() => a.remotes.size === 2 && b.isOnline() && c.isOnline(), 3000, "roster");
+
+    const lobby = server.lobbies()[0].instance;
+    unshield(lobby);
+    shipOf(lobby, { id: b.selfId }).warpUntil = Date.now() + 5000;
+
+    await runFrames([
+        [a, local(a, 0, 0)], [b, local(b, 5, 5)], [c, local(c, -5, 5)]
+    ], 600);
+
+    let ships = a.remoteShipPositions();
+    assert.equal(ships.find((s) => s.id === b.selfId).warp, true, "warping");
+    assert.equal(ships.find((s) => s.id === c.selfId).warp, false, "not warping");
+
+    // Bubble gone: back on the radar.
+    shipOf(lobby, { id: b.selfId }).warpUntil = 0;
+
+    await runFrames([
+        [a, local(a, 0, 0)], [b, local(b, 5, 5)], [c, local(c, -5, 5)]
+    ], 600);
+
+    ships = a.remoteShipPositions();
+    assert.equal(ships.find((s) => s.id === b.selfId).warp, false, "bubble over");
+
+    shutdownAll();
+});
+
 test("client: other pilots' ships show their chosen design and damage, and smoke when critical", async () => {
     const server = await loadWorker();
 

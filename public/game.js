@@ -1922,8 +1922,8 @@ function updateShipExplosions(dt) {
 // An old-school round radar in the bottom-right corner, shown online.
 // Other pilots within range appear as blips where they really are;
 // farther ones sit on the rim, showing only their direction. No names,
-// no colors: every blip looks the same. A sweep circles round and each
-// blip flares as it passes, then fades.
+// no colors: every blip looks the same. Each blip flares in turn, then
+// fades, as an unseen sweep goes round.
 // The radar is "north up", like the screen (it doesn't turn with the
 // ship).
 // ------------------------------------------------------------
@@ -2017,29 +2017,6 @@ function drawRadar(ctx, size) {
     ctx.moveTo(c, c - r); ctx.lineTo(c, c + r);
     ctx.stroke();
 
-    // The sweep: a bright leading edge with a fading trail behind it.
-    const trail = 0.9;
-    const steps = 16;
-
-    for (let i = 0; i < steps; i++) {
-        const a0 = radar.sweep - trail * (i + 1) / steps;
-        const a1 = radar.sweep - trail * i / steps;
-
-        ctx.fillStyle = green(0.22 * (1 - i / steps));
-        ctx.beginPath();
-        ctx.moveTo(c, c);
-        ctx.arc(c, c, r, a0, a1);
-        ctx.closePath();
-        ctx.fill();
-    }
-
-    ctx.strokeStyle = green(0.8);
-    ctx.lineWidth = Math.max(1, size * 0.012);
-    ctx.beginPath();
-    ctx.moveTo(c, c);
-    ctx.lineTo(c + Math.cos(radar.sweep) * r, c + Math.sin(radar.sweep) * r);
-    ctx.stroke();
-
     // Blips. The canvas's x is the world's x and its y is the world's z,
     // which matches the screen (screen up is -z).
     const ships = multiplayer ? multiplayer.remoteShipPositions() : [];
@@ -2048,6 +2025,9 @@ function drawRadar(ctx, size) {
     const blip = Math.max(2, size * 0.032);
 
     for (const ship of ships) {
+        // Inside a warp bubble: off the radar until it's gone.
+        if (ship.warp) continue;
+
         const dx = ship.x - px;
         const dz = ship.z - pz;
         const d = Math.hypot(dx, dz);
