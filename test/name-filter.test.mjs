@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 
-import { checkName, cleanName, nameProblem, NAME_MAX } from "../public/name-filter.js";
+import { checkName, cleanName, nameProblem, NAME_MAX, clanOf, splitName, noFriendlyFire } from "../public/name-filter.js";
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -73,6 +73,38 @@ test("problem messages", () => {
     assert.match(nameProblem("short"), /2-14/);
     assert.match(nameProblem("blocked"), /ISN'T ALLOWED/);
     assert.match(nameProblem("reserved"), /RESERVED/);
+});
+
+test("clan tags: [TAG] in front, 2-4 letters or digits; same tag = same clan", () => {
+    assert.deepEqual(checkName("[ko]fuzzy cat"), { ok: true, name: "[KO]FUZZY CAT" });
+    assert.equal(cleanName("  [ k-o! ]  Ace "), "[KO]ACE", "tidied");
+    assert.equal(cleanName("[toolong]ACE"), "[TOOL]ACE", "cut to 4");
+    assert.equal(cleanName("[]ACE"), "ACE", "empty brackets dropped");
+    assert.equal(cleanName("ACE [KO]"), "ACE KO", "only a tag at the front counts");
+
+    assert.equal(checkName("[K]ACE").reason, "tag", "too short");
+    assert.match(nameProblem("tag"), /2-4/);
+    assert.equal(checkName("[KO]A").reason, "short", "the callsign still needs 2 characters");
+    assert.equal(checkName("[MOD]ACE").reason, "reserved", "no staff-looking tags");
+    assert.equal(checkName("[SH1T]ACE").reason, "blocked", "tags are filtered too");
+    assert.equal(checkName("[FU]CK").ok, false, "no splitting a bad word across tag and callsign");
+
+    assert.equal(clanOf("[KO]ACE"), "KO");
+    assert.equal(clanOf("ACE"), "");
+    assert.deepEqual(splitName("[KO]FUZZY CAT"), { tag: "KO", callsign: "FUZZY CAT" });
+
+    assert.equal(noFriendlyFire("[KO]A1", "[KO]B2"), true, "same clan");
+    assert.equal(noFriendlyFire("[KO]A1", "[ZZ]B2"), false, "different clans");
+    assert.equal(noFriendlyFire("ACE", "BOB"), false, "no tags");
+});
+
+test("the peace tag [PASS]: allowed, and at peace with everyone", () => {
+    assert.deepEqual(checkName("[pass]ace"), { ok: true, name: "[PASS]ACE" });
+
+    assert.equal(noFriendlyFire("[PASS]ACE", "BOB"), true);
+    assert.equal(noFriendlyFire("BOB", "[PASS]ACE"), true, "both ways");
+    assert.equal(noFriendlyFire("[PASS]ACE", "[KO]BOB"), true);
+    assert.equal(noFriendlyFire("[PASS]ACE", "[PASS]BOB"), true);
 });
 
 let failed = 0;

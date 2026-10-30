@@ -728,6 +728,104 @@ test("laser and rockets hit other pilots too; the spawn shield protects", async 
     shutdownAll();
 });
 
+test("clans: pilots with the same [TAG] can't hurt each other; everyone else can", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "[KO]ALPHA");
+    const b = await rawClient(server, "[KO]BRAVO");
+    const c = await rawClient(server, "[ZZ]CHARLIE");
+    const d = await rawClient(server, "DELTA");
+    const lobby = quietLobby(server);
+
+    assert.equal(a.welcome.name, "[KO]ALPHA", "tag kept in the name");
+
+    for (const ship of lobby.ships.values()) ship.score = 20000;
+
+    // BRAVO right in front of ALPHA; the others off to the side.
+    const where = { a: [0, 0], b: [0, 6], c: [30, 0], d: [-30, 0] };
+    const holdAll = (ms) => hold([[a, ...where.a], [b, ...where.b], [c, ...where.c], [d, ...where.d]], ms);
+
+    await holdAll(150);
+    unshield(lobby);
+
+    // Bullets, the laser and a rocket at a teammate: nothing.
+    a.fire(0, 0, 1.1, 0);
+    await holdAll(300);
+    a.fire(1, 0, 1.1, 0);
+    await holdAll(300);
+    a.fire(2, 0, 1.1, 0);
+    await holdAll(1500);
+
+    assert.equal(shipOf(lobby, b).hull, 3, "teammate untouched");
+    assert.equal(a.eventsOf("sh").filter((e) => e[1] === b.id).length, 0);
+    assert.equal(shipOf(lobby, a).score, 20000, "no points for hitting a teammate");
+
+    // A different tag, or none: fair game.
+    where.c = [0, 6];
+    where.b = [40, 40];
+    await holdAll(1500);
+    unshield(lobby);
+    a.fire(0, 0, 1.1, 0);
+    await waitFor(() => a.eventsOf("sh").some((e) => e[1] === c.id), 1500, "hit CHARLIE ([ZZ])");
+
+    where.c = [30, 0];
+    where.d = [0, 6];
+    await holdAll(1500);
+    unshield(lobby);
+    a.fire(0, 0, 1.1, 0);
+    await waitFor(() => a.eventsOf("sh").some((e) => e[1] === d.id), 1500, "hit DELTA (no tag)");
+
+    // Renaming into the clan makes you a teammate at once.
+    d.send({ t: "n", name: "[KO]DELTA" });
+    await waitFor(() => shipOf(lobby, d).name === "[KO]DELTA", 1000, "renamed");
+    const hull = shipOf(lobby, d).hull;
+    await holdAll(1300);
+    a.fire(0, 0, 1.1, 0);
+    await holdAll(500);
+    assert.equal(shipOf(lobby, d).hull, hull, "now a teammate");
+
+    shutdownAll();
+});
+
+test("clans: [PASS] can't hurt anyone, and nobody can hurt them", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "[PASS]ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    for (const ship of lobby.ships.values()) ship.score = 20000;
+
+    const where = { a: [0, 0], b: [0, 6] };
+    const holdAll = (ms) => hold([[a, ...where.a], [b, ...where.b]], ms);
+
+    await holdAll(150);
+    unshield(lobby);
+
+    a.fire(0, 0, 1.1, 0);
+    await holdAll(300);
+    a.fire(2, 0, 1.1, 0);
+    await holdAll(1500);
+    assert.equal(shipOf(lobby, b).hull, 3, "[PASS] can't hurt others");
+
+    // The other way round.
+    where.a = [0, 6];
+    where.b = [0, 0];
+    await holdAll(300);
+    b.fire(0, 0, 1.1, 0);
+    await holdAll(300);
+    b.fire(2, 0, 1.1, 0);
+    await holdAll(1500);
+    assert.equal(shipOf(lobby, a).hull, 3, "and nobody can hurt [PASS]");
+
+    // Asteroids still can.
+    unshield(lobby);
+    const ship = shipOf(lobby, a);
+    lobby.spawnAsteroid(ship.x, ship.z, 1.0, 0, 0);
+    await holdAll(300);
+    assert.ok(ship.hull < 3, "asteroids still count");
+
+    shutdownAll();
+});
+
 test("pilots can't hurt themselves", async () => {
     const server = await loadWorker();
     const a = await rawClient(server, "ALPHA");
@@ -1527,6 +1625,31 @@ test("client: server unreachable → offline, harmless calls, joins when it retu
     await waitFor(() => b.status === "offline", 1500, "join timeout");
     server2.hang = false;
     await waitFor(() => b.isOnline(), 3000, "joins on retry");
+
+    shutdownAll();
+});
+
+test("clans (client): teammates are recognized by tag, so your shots pass their ships", async () => {
+    const server = await loadWorker();
+    const a = makeClient(server, "[KO]ALPHA");
+    const b = makeClient(server, "[KO]BRAVO");
+    const c = makeClient(server, "CHARLIE");
+
+    await waitFor(() => a.remotes.size === 2 && b.isOnline() && c.isOnline(), 3000, "roster");
+    unshield(server.lobbies()[0].instance);
+
+    await runFrames([
+        [a, local(a, 0, 0)], [b, local(b, 5, 5)], [c, local(c, -5, 5)]
+    ], 600);
+
+    assert.equal(a.isTeammate(b.selfId), true);
+    assert.equal(a.isTeammate(c.selfId), false);
+    assert.equal(c.isTeammate(a.selfId), false, "no tag: no teammates");
+
+    const ships = a.remoteShipPositions();
+    assert.equal(ships.length, 2);
+    assert.equal(ships.find((s) => s.id === b.selfId).ally, true);
+    assert.equal(ships.find((s) => s.id === c.selfId).ally, false);
 
     shutdownAll();
 });

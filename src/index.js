@@ -38,7 +38,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 // Callsign rules, shared with the game (public/name-filter.js).
-import { checkName, randomCallsign } from "../public/name-filter.js";
+import { checkName, randomCallsign, noFriendlyFire } from "../public/name-filter.js";
 
 // UFO visits, shared with the game (public/ufo.js): the flight plan
 // and its timing are worked out the same way on both sides.
@@ -442,7 +442,7 @@ export class Matchmaker extends DurableObject {
 
             const record = {
                 key: entry.key.slice(0, 120),
-                name: String(entry.name ?? "PILOT").slice(0, 16),
+                name: String(entry.name ?? "PILOT").slice(0, 20),
                 color: typeof entry.color === "string" ? entry.color.slice(0, 9) : "#ffffff",
                 score,
                 kills: Math.max(0, Math.floor(Number(entry.kills) || 0)),
@@ -1952,7 +1952,7 @@ export class Lobby extends DurableObject {
             if (ufo) consider("u", null, ufo.x, ufo.z, UFO.shieldRadius - BULLET.radius);
 
             for (const s of this.ships.values()) {
-                if (s === b.owner || !this.canBeHit(s, now)) continue;
+                if (!this.isTarget(s, b.owner, now)) continue;
 
                 const p = this.shipPosition(s, now);
                 consider("s", s, p.x, p.z, SHIP.radius);
@@ -2018,7 +2018,7 @@ export class Lobby extends DurableObject {
         }
 
         for (const s of this.ships.values()) {
-            if (s === beam.owner || beam.hit.has(s) || !this.canBeHit(s, now)) continue;
+            if (beam.hit.has(s) || !this.isTarget(s, beam.owner, now)) continue;
 
             const p = this.shipPosition(s, now);
             if (!touches(p.x, p.z, SHIP.radius)) continue;
@@ -2082,7 +2082,7 @@ export class Lobby extends DurableObject {
 
             if (!contact) {
                 for (const s of this.ships.values()) {
-                    if (s === rocket.owner || !this.canBeHit(s, now)) continue;
+                    if (!this.isTarget(s, rocket.owner, now)) continue;
 
                     const p = this.shipPosition(s, now);
 
@@ -2135,7 +2135,7 @@ export class Lobby extends DurableObject {
         }
 
         for (const s of this.ships.values()) {
-            if (s === by || !this.canBeHit(s, now)) continue;
+            if (!this.isTarget(s, by, now)) continue;
 
             const p = this.shipPosition(s, now);
 
@@ -2177,7 +2177,7 @@ export class Lobby extends DurableObject {
         for (const m of this.mines) consider("m", m, m.x, m.z);
 
         for (const s of this.ships.values()) {
-            if (s === rocket.owner || !this.canBeHit(s, now)) continue;
+            if (!this.isTarget(s, rocket.owner, now)) continue;
 
             const p = this.shipPosition(s, now);
             consider("s", s, p.x, p.z);
@@ -2228,6 +2228,21 @@ export class Lobby extends DurableObject {
         return present.length ? present[Math.floor(Math.random() * present.length)] : null;
     }
 
+    // Pilots with the same clan tag ([KO]...) are teammates, and a pilot
+    // wearing [PASS] is at peace with everyone: they can't hurt each
+    // other.
+    sameClan(a, b) {
+        if (!a || !b || a === b) return false;
+
+        return noFriendlyFire(a.name, b.name);
+    }
+
+    // Can `owner`'s weapons hit ship `s`? Not their own ship, not a
+    // teammate, not a ship that can't be hit right now.
+    isTarget(s, owner, now) {
+        return s !== owner && !this.sameClan(s, owner) && this.canBeHit(s, now);
+    }
+
     canBeHit(ship, now) {
         return this.isPresent(ship, now) &&
             now >= ship.shieldUntil &&
@@ -2240,6 +2255,9 @@ export class Lobby extends DurableObject {
     // no pilot gets credit for.
     damageShip(ship, amount, attacker, now, cause = null) {
         if (!ship.alive) return;
+
+        // Teammates never hurt each other.
+        if (attacker && this.sameClan(ship, attacker)) return;
         if (cause !== "ufo" && (now < ship.shieldUntil || now < ship.warpUntil)) return;
         if (now < ship.hitCooldownUntil && cause !== "rogue" && cause !== "ufo") return;
 
@@ -2268,6 +2286,7 @@ export class Lobby extends DurableObject {
         }
 
         if (killer && ![...this.ships.values()].includes(killer)) killer = null;
+        if (killer && this.sameClan(killer, ship)) killer = null;
 
         ship.alive = false;
         ship.deaths++;

@@ -5,7 +5,9 @@
 // say: a name it rejects is never shown to anyone.
 //
 // What it does:
-//  - Keeps names short and plain: letters, digits, spaces, - and _.
+//  - Keeps names short and plain: letters, digits, spaces, - and _,
+//    with an optional clan tag in front: [KO]CALLSIGN. Pilots with the
+//    same tag are teammates.
 //  - Blocks curse words and slurs, including common disguises:
 //    digits for letters (SH1T), separators (F_U_C_K, F U C K),
 //    stretched letters (FUUUCK) and a few phonetic spellings.
@@ -20,6 +22,18 @@
 
 export const NAME_MIN = 2;
 export const NAME_MAX = 14;
+
+// Clan tags: [TAG] in front of the callsign, e.g. [KO]FUZZY CAT.
+// Pilots with the same tag are teammates (they can't hurt each other).
+export const TAG_MIN = 2;
+export const TAG_MAX = 4;
+
+// The peace tag: a pilot wearing [PASS] can't hurt other pilots, and
+// other pilots can't hurt them (asteroids, mines and the UFO still can).
+export const PEACE_TAG = "PASS";
+
+// The longest full name: "[" + tag + "]" + callsign.
+export const FULL_NAME_MAX = NAME_MAX + TAG_MAX + 2;
 
 // The built-in lists are stored encoded, so the repository doesn't
 // display them as plain text. (To read them: atob() the string.)
@@ -64,8 +78,20 @@ function getLists() {
 }
 
 // Uppercase, only A-Z 0-9 space - _, single spaces, trimmed, cut to
-// NAME_MAX. This is exactly what other players will see.
+// NAME_MAX; plus an optional clan tag in brackets at the front, letters
+// and digits only, cut to TAG_MAX. This is exactly what other players
+// will see, e.g. "[KO]FUZZY CAT".
 export function cleanName(raw) {
+    const text = String(raw ?? "").toUpperCase();
+    const match = text.match(/^\s*\[([^\]]*)\]\s*(.*)$/);
+
+    const tag = match ? match[1].replace(/[^A-Z0-9]/g, "").slice(0, TAG_MAX) : "";
+    const callsign = cleanCallsign(match ? match[2] : text);
+
+    return tag ? `[${tag}]${callsign}` : callsign;
+}
+
+function cleanCallsign(raw) {
     return String(raw ?? "")
         .toUpperCase()
         .replace(/[^A-Z0-9 _-]/g, "")
@@ -73,6 +99,26 @@ export function cleanName(raw) {
         .trim()
         .slice(0, NAME_MAX)
         .trim();
+}
+
+// A (cleaned) name's parts: { tag: "KO" or "", callsign }.
+export function splitName(name) {
+    const match = String(name ?? "").match(/^\[([A-Z0-9]*)\](.*)$/);
+    return match ? { tag: match[1], callsign: match[2] } : { tag: "", callsign: String(name ?? "") };
+}
+
+// A name's clan tag ("" if none). Same tag = teammates.
+export function clanOf(name) {
+    return splitName(name).tag;
+}
+
+// True if pilots with these names can't hurt each other: the same clan
+// tag, or either one wearing the peace tag [PASS].
+export function noFriendlyFire(nameA, nameB) {
+    const a = clanOf(nameA);
+    const b = clanOf(nameB);
+
+    return (a !== "" && a === b) || a === PEACE_TAG || b === PEACE_TAG;
 }
 
 // Digits read as letters: one reading with 1 as I, one with 1 as L.
@@ -113,11 +159,28 @@ function removeAllowed(text) {
  */
 export function checkName(raw) {
     const name = cleanName(raw);
+    const { tag, callsign } = splitName(name);
 
-    if (name.replace(/[^A-Z0-9]/g, "").length < NAME_MIN) {
+    if (callsign.replace(/[^A-Z0-9]/g, "").length < NAME_MIN) {
         return { ok: false, name, reason: "short" };
     }
 
+    if (tag && tag.length < TAG_MIN) {
+        return { ok: false, name, reason: "tag" };
+    }
+
+    // The callsign, the tag, and the two run together (so a bad word
+    // can't be split across them) all have to pass.
+    for (const text of tag ? [callsign, tag, tag + callsign] : [callsign]) {
+        const reason = problemWith(text);
+        if (reason) return { ok: false, name, reason };
+    }
+
+    return { ok: true, name };
+}
+
+// Why a piece of a name isn't allowed ("reserved" | "blocked"), or null.
+function problemWith(name) {
     const { strong, words } = getLists();
 
     for (const one of ["I", "L"]) {
@@ -127,24 +190,18 @@ export function checkName(raw) {
         // F U C K and F_U_C_K are caught too.
         const compact = text.replace(/[^A-Z]/g, "");
 
-        if (RESERVED.includes(compact)) {
-            return { ok: false, name, reason: "reserved" };
-        }
+        if (RESERVED.includes(compact)) return "reserved";
 
         const cleaned = removeAllowed(compact);
         const two = shrinkTo2(cleaned);
         const single = shrinkTo1(cleaned);
 
         for (const bad of strong) {
-            if (cleaned.includes(bad) || two.includes(bad)) {
-                return { ok: false, name, reason: "blocked" };
-            }
+            if (cleaned.includes(bad) || two.includes(bad)) return "blocked";
 
             // FUUCK -> FUCK. Only for words without a double letter of
             // their own, or shortening them would catch clean words.
-            if (!hasDoubleLetter(bad) && single.includes(bad)) {
-                return { ok: false, name, reason: "blocked" };
-            }
+            if (!hasDoubleLetter(bad) && single.includes(bad)) return "blocked";
         }
 
         // Whole words, and the whole name squeezed together.
@@ -163,19 +220,20 @@ export function checkName(raw) {
                         candidate === bad + "S" ||
                         candidate === bad + "Z"
                     ) {
-                        return { ok: false, name, reason: "blocked" };
+                        return "blocked";
                     }
                 }
             }
         }
     }
 
-    return { ok: true, name };
+    return null;
 }
 
 // A short message for each reason, for the name box.
 export function nameProblem(reason) {
     if (reason === "short") return `USE ${NAME_MIN}-${NAME_MAX} LETTERS OR NUMBERS`;
+    if (reason === "tag") return `CLAN TAGS ARE ${TAG_MIN}-${TAG_MAX} LETTERS OR NUMBERS`;
     if (reason === "reserved") return "THAT CALLSIGN IS RESERVED";
     if (reason === "blocked") return "THAT CALLSIGN ISN'T ALLOWED";
     return "";

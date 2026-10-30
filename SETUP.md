@@ -98,6 +98,22 @@ can award themselves points.
     (run it with Blender, or with plain `python3`). If the file is missing, the
     game draws a simpler stand-in saucer.
 
+### Clans
+
+A pilot can put a clan tag in front of their callsign, in brackets:
+`[KO]FUZZY CAT`. Everyone wearing the same tag is on the same team: their
+bullets, lasers and rockets pass harmlessly through each other (the server
+enforces it), and nobody scores for hitting a teammate. Pilots with no tag or
+a different tag are fair game.
+
+The tag `[PASS]` is special: anyone can wear it, and it means peace. A pilot
+wearing `[PASS]` can't damage any other pilot, and no pilot can damage them
+(asteroids, mines, the rogue asteroid and the UFO still can).
+
+Tags are 2–4 letters or digits and go through
+the same word filter as callsigns; renaming in or out of a clan takes effect
+straight away.
+
 ### One pilot per browser
 
 Each browser is one pilot. Reloading the page, or opening the game in another

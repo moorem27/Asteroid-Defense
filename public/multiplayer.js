@@ -20,7 +20,7 @@
 // ============================================================
 
 // Callsign rules (shared with the server).
-import { checkName, nameProblem, randomCallsign } from "./name-filter.js";
+import { checkName, nameProblem, randomCallsign, noFriendlyFire, FULL_NAME_MAX } from "./name-filter.js";
 
 // Must match PROTOCOL_VERSION in src/index.js.
 const PROTOCOL_VERSION = 2;
@@ -262,6 +262,13 @@ export class Multiplayer {
         return this.roster.get(String(id))?.name ?? "A PILOT";
     }
 
+    // True if your weapons can't hurt that pilot (the server enforces
+    // it): they wear your clan tag ([KO]...), or one of you wears the
+    // peace tag [PASS].
+    isTeammate(id) {
+        return noFriendlyFire(this.selfName ?? this.name, this.nameOf(String(id)));
+    }
+
     // The ship design another pilot flies (0 if unknown).
     designOf(id) {
         const samples = this.remotes.get(String(id))?.samples;
@@ -281,7 +288,9 @@ export class Multiplayer {
 
         for (const remote of this.remotes.values()) {
             const g = remote.visual?.group;
-            if (g && g.visible) list.push({ x: g.position.x, z: g.position.z });
+            if (g && g.visible) {
+                list.push({ id: remote.id, x: g.position.x, z: g.position.z, ally: this.isTeammate(remote.id) });
+            }
         }
 
         return list;
@@ -837,7 +846,7 @@ export class Multiplayer {
         if (id === this.selfId) return;
 
         this.roster.set(id, {
-            name: String(p.name ?? "PILOT").slice(0, 16),
+            name: String(p.name ?? "PILOT").slice(0, FULL_NAME_MAX),
             color: typeof p.color === "string" ? p.color : "#ffffff"
         });
 
@@ -1460,7 +1469,7 @@ export class Multiplayer {
     // someone else's).
     onName(data) {
         const id = String(data.id);
-        const name = String(data.name ?? "").slice(0, 16);
+        const name = String(data.name ?? "").slice(0, FULL_NAME_MAX);
 
         if (!name) return;
 
