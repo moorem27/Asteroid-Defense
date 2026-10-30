@@ -343,7 +343,7 @@ numbers. Things to know:
 - **Requests:** each flying player sends 10 updates a second, plus their
   shots. Several WebSocket messages count as one request toward the daily
   allowance.
-- **Duration:** a lobby runs its 20-per-second simulation the whole time
+- **Duration:** a lobby runs its 30-per-second simulation the whole time
   anyone is connected, so it counts toward duration for as long as it has
   players. An empty lobby stops.
 - **Free plan limits:** going over a daily limit makes further requests fail

@@ -49,7 +49,7 @@ const CONFIG = {
     joinTimeoutMs: 6000,
     keepaliveMs: 15000,
 
-    // The server sends twenty updates a second; this long with nothing
+    // The server sends thirty updates a second; this long with nothing
     // means the connection is dead.
     silenceTimeoutMs: 10000,
 
@@ -61,8 +61,9 @@ const CONFIG = {
     // two updates to move smoothly between. How far is measured from
     // this connection: one update interval plus room for the variation
     // in how long updates take to arrive, within these limits.
-    snapshotIntervalMs: 50,
-    minRenderDelayMs: 45,
+    // (Matches SIM_MS in src/index.js: 30 updates a second.)
+    snapshotIntervalMs: 33,
+    minRenderDelayMs: 35,
     maxRenderDelayMs: 160,
     maxExtrapolateMs: 250,
 

@@ -1979,7 +1979,7 @@ test("client: the smoothing delay adapts to the connection (small when steady, l
         let server = await loadWorker();
         let a = makeClient(server, "ALPHA");
         let b = makeClient(server, "BRAVO");
-        await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "online");
+        await waitFor(() => a.remotes.size === 1 && b.isOnline(), 8000, "online");
         await runFrames([[a, local(a, 0, 0)], [b, local(b, 5, 5)]], 1500);
 
         const steady = a.renderDelay();

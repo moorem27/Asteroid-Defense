@@ -56,13 +56,18 @@ const MAX_PLAYERS = 20;
 
 // ---- Timing -------------------------------------------------------
 
-// Simulation step (20 per second), ship snapshots every step (20 per
-// second: messages from the lobby to players don't count toward
-// Cloudflare's request limits, so this is cheap), full world resync
-// every second.
-const SIM_MS = 50;
+// Simulation step (30 per second), ship snapshots and events every
+// step (30 per second: messages from the lobby to players don't count
+// toward Cloudflare's request limits, so this costs nothing extra),
+// full world resync every second. Players still send their own updates
+// 10-20 times a second (multiplayer.js), since those do count.
+// If SIM_MS changes, change snapshotIntervalMs in multiplayer.js too.
+const SIM_MS = 1000 / 30;
 const SNAPSHOT_EVERY = 1;
-const WORLD_SYNC_EVERY = 20;
+const WORLD_SYNC_EVERY = Math.round(1000 / SIM_MS);
+
+// New asteroids and mines are considered twice a second.
+const SPAWN_CHECK_EVERY = Math.round(500 / SIM_MS);
 
 const ROUND_MS = 15 * 60 * 1000;
 
@@ -1319,7 +1324,7 @@ export class Lobby extends DurableObject {
         this.shipCollisions(now);
         this.updateRogue(dt, now);
 
-        if (this.stepCount % 10 === 0) {
+        if (this.stepCount % SPAWN_CHECK_EVERY === 0) {
             this.spawnThings(now);
             this.despawnFarAsteroids();
         }
