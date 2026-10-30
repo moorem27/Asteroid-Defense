@@ -21,6 +21,7 @@
 
 // Callsign rules (shared with the server).
 import { checkName, nameProblem, randomCallsign, noFriendlyFire, FULL_NAME_MAX } from "./name-filter.js";
+import { rankOf } from "./ranks.js";
 
 // Must match PROTOCOL_VERSION in src/index.js.
 const PROTOCOL_VERSION = 2;
@@ -84,6 +85,7 @@ const STATUS_AWAY = 2;
 const FLAG_VISIBLE = 1;
 const FLAG_WARP = 2;
 const FLAG_SHIELD = 4;
+const FLAG_CLOAK = 8;
 
 export class Multiplayer {
     /**
@@ -456,6 +458,9 @@ export class Multiplayer {
         const last = this.lastSent;
         if (!last || !last.playing) return true;
 
+        // Cloaking (or uncloaking) is sent at once.
+        if (Boolean(local.cloaked) !== last.ck) return true;
+
         // Where other players will predict this ship to be, from the
         // last update (they move it along its last velocity).
         const px = last.x + last.vx * this.sendClock;
@@ -495,7 +500,8 @@ export class Multiplayer {
             r: num(local?.r),
             vx: num(local?.vx),
             vz: num(local?.vz),
-            th: local?.thrust > 0 ? 1 : local?.thrust < 0 ? -1 : 0
+            th: local?.thrust > 0 ? 1 : local?.thrust < 0 ? -1 : 0,
+            ck: Boolean(local?.cloaked)
         };
 
         this.send({
@@ -509,7 +515,8 @@ export class Multiplayer {
             th: local?.thrust > 0 ? 1 : local?.thrust < 0 ? -1 : 0,
             st,
             w: local?.weapon ?? 0,
-            d: local?.design ?? 0
+            d: local?.design ?? 0,
+            ck: local?.cloaked ? 1 : 0
         });
     }
 
@@ -557,6 +564,7 @@ export class Multiplayer {
             case "world":
                 if (Array.isArray(data.lb)) {
                     this.standings = data.lb;
+                    this.updateRanks();
                     this.renderLeaderboard();
                 }
 
@@ -688,6 +696,7 @@ export class Multiplayer {
         }
 
         this.standings = Array.isArray(data.world?.lb) ? data.world.lb : [];
+        this.updateRanks();
 
         clearInterval(this.keepaliveTimer);
         this.keepaliveTimer = setInterval(() => {
@@ -1101,7 +1110,7 @@ export class Multiplayer {
         bubble.visible = false;
         group.add(bubble);
 
-        const label = makeLabel(THREE, remote.name, remote.color);
+        const label = makeLabel(THREE, remote.name, remote.color, (remote.rank = this.rankOf(remote.id)));
 
         if (label) {
             label.position.set(0, 1, -2.1);
@@ -1512,6 +1521,24 @@ export class Multiplayer {
         this.renderLeaderboard();
     }
 
+    // A pilot's rank (public/ranks.js), from their score this round.
+    rankOf(id) {
+        const row = this.standings.find((s) => String(s[0]) === String(id));
+        return rankOf(row ? num(row[1]) : 0);
+    }
+
+    // Redraw the name tags of pilots whose rank has changed.
+    updateRanks() {
+        for (const remote of this.remotes.values()) {
+            const rank = this.rankOf(remote.id);
+
+            if (remote.rank !== rank) {
+                remote.rank = rank;
+                this.refreshLabel(remote);
+            }
+        }
+    }
+
     // Redraw a pilot's name tag.
     refreshLabel(remote) {
         const visual = remote.visual;
@@ -1523,7 +1550,7 @@ export class Multiplayer {
             visual.label.material.dispose?.();
         }
 
-        visual.label = makeLabel(this.THREE, remote.name, remote.color);
+        visual.label = makeLabel(this.THREE, remote.name, remote.color, (remote.rank = this.rankOf(remote.id)));
 
         if (visual.label) {
             visual.label.position.set(0, 1, -2.1);
@@ -1587,11 +1614,13 @@ export class Multiplayer {
                 const id = String(s[0]);
                 const me = id === this.selfId;
                 const name = me ? "YOU" : this.nameOf(id);
+                const rank = rankOf(num(s[1]));
 
                 rows.push(
                     `<li class="${me ? "lb-me" : ""}">` +
                     `<span class="lb-rank">${i + 1}</span>` +
                     `<span class="lb-name" style="color:${escapeHtml(this.colorOf(id))}">${escapeHtml(name)}</span>` +
+                    `<span class="lb-lvl" title="Rank ${rank}" aria-label="rank ${rank}">${rank}</span>` +
                     `<span class="lb-score">${formatScore(num(s[1]))}</span>` +
                     `</li>`
                 );
@@ -1746,24 +1775,59 @@ function sampleRocket(samples, renderTime) {
     return last;
 }
 
-function makeLabel(THREE, name, color) {
+// The name tag over a pilot's ship: their callsign, then their rank in
+// a small box.
+function makeLabel(THREE, name, color, rank = 1) {
     if (typeof document === "undefined") return null;
 
     try {
         const canvas = document.createElement("canvas");
-        canvas.width = 256;
+        canvas.width = 320;
         canvas.height = 48;
 
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
 
-        ctx.font = "bold 26px monospace";
-        ctx.textAlign = "center";
+        const text = String(name);
+        const badge = String(rank);
+
+        // Shrink the type for long callsigns so the badge still fits.
+        let size = 26;
+        let nameW;
+        let badgeW;
+
+        for (; size > 14; size -= 2) {
+            ctx.font = `bold ${size}px monospace`;
+            nameW = ctx.measureText?.(text)?.width ?? text.length * size * 0.6;
+            ctx.font = `bold ${Math.round(size * 0.8)}px monospace`;
+            badgeW = (ctx.measureText?.(badge)?.width ?? badge.length * size * 0.5) + size * 0.6;
+
+            if (nameW + badgeW + 10 <= canvas.width - 8) break;
+        }
+
+        const gap = 8;
+        const left = (canvas.width - (nameW + gap + badgeW)) / 2;
+
         ctx.textBaseline = "middle";
         ctx.shadowColor = color;
         ctx.shadowBlur = 8;
         ctx.fillStyle = color;
-        ctx.fillText(name, 128, 24);
+        ctx.strokeStyle = color;
+
+        ctx.textAlign = "left";
+        ctx.font = `bold ${size}px monospace`;
+        ctx.fillText(text, left, 24);
+
+        // The rank box.
+        const bx = left + nameW + gap;
+        const bh = size * 0.95;
+
+        ctx.lineWidth = 2;
+        ctx.strokeRect?.(bx, 24 - bh / 2, badgeW, bh);
+
+        ctx.textAlign = "center";
+        ctx.font = `bold ${Math.round(size * 0.8)}px monospace`;
+        ctx.fillText(badge, bx + badgeW / 2, 25);
 
         const texture = new THREE.CanvasTexture(canvas);
         texture.colorSpace = THREE.SRGBColorSpace;
@@ -1777,7 +1841,7 @@ function makeLabel(THREE, name, color) {
         });
 
         const sprite = new THREE.Sprite(material);
-        sprite.scale.set(5.3, 1, 1);
+        sprite.scale.set(5.3 * 320 / 256, 1, 1);
         sprite.renderOrder = 5;
 
         return sprite;

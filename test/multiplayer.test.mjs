@@ -1688,6 +1688,115 @@ test("client: a ship inside a warp bubble is flagged (so the radar leaves it off
     shutdownAll();
 });
 
+test("cloak: only from 25,000; a cloaked ship is hidden from others, can't fire, can still be hit; death ends it", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    const report = async (ck, ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+            a.state(3, 4, 0, { ck });
+            b.state(-3, 4, 0);
+            await sleep(50);
+        }
+    };
+
+    await report(1, 200);
+    unshield(lobby);
+
+    const shipA = shipOf(lobby, a);
+    assert.equal(shipA.cloaked, false, "locked below 25,000");
+
+    shipA.score = 26000;
+    await report(1, 300);
+    assert.equal(shipA.cloaked, true, "cloaked");
+
+    const row = lobby.snapshotMessage(Date.now()).p.find((p) => p[0] === a.id);
+    assert.deepEqual(row.slice(1, 8), [0, 0, 0, 0, 0, 0, 8], "no position, not visible, flag 8");
+
+    // No weapons.
+    a.fire(0, 3, 5.1, 0);
+    await sleep(30);
+    assert.equal(lobby.bullets.length, 0, "can't fire while cloaked");
+
+    // Rockets won't lock on.
+    assert.equal(lobby.targetValid({ kind: "s", ref: shipA }, shipOf(lobby, b), Date.now()), false);
+
+    // Still hit; the hit doesn't say where.
+    lobby.damageShip(shipA, 1, shipOf(lobby, b), Date.now());
+    assert.equal(shipA.hull, 2, "takes damage");
+
+    await waitFor(() => b.eventsOf("sh").length > 0, 2000, "hit event");
+    const hit = b.eventsOf("sh")[0];
+    assert.equal(hit[4], null, "no position");
+    assert.equal(hit[5], null, "no position");
+
+    // Uncloaked: back in view, and can fire.
+    await report(0, 200);
+    assert.equal(shipA.cloaked, false);
+
+    const back = lobby.snapshotMessage(Date.now()).p.find((p) => p[0] === a.id);
+    assert.equal(back[7] & 1, 1, "visible again");
+    assert.equal(back[1], 3);
+
+    a.fire(0, 3, 5.1, 0);
+    await sleep(30);
+    assert.equal(lobby.bullets.length, 1, "fires again");
+
+    // Destroyed while cloaked: the cloak goes.
+    await report(1, 200);
+    assert.equal(shipA.cloaked, true);
+
+    shipA.hitCooldownUntil = 0;
+    lobby.damageShip(shipA, shipA.hull, null, Date.now(), "rogue");
+    assert.equal(shipA.cloaked, false, "death ends the cloak");
+
+    shutdownAll();
+});
+
+test("client: ranks beside names (a new one every 10,000), and a cloaked pilot vanishes from view and the radar", async () => {
+    const server = await loadWorker();
+
+    const a = makeClient(server, "ALPHA");
+    const b = makeClient(server, "BRAVO");
+
+    await waitFor(() => a.remotes.size === 1 && b.isOnline(), 3000, "roster");
+
+    const lobby = server.lobbies()[0].instance;
+    unshield(lobby);
+
+    const shipB = shipOf(lobby, { id: b.selfId });
+    shipB.score = 34000;
+
+    let cloaked = false;
+    const frames = (ms) => runFrames([
+        [a, local(a, 0, 0)], [b, () => local(b, 5, 5, { cloaked })]
+    ], ms);
+
+    await frames(1400);
+
+    assert.equal(a.rankOf(b.selfId), 4, "34,000 points: rank 4");
+    assert.match(a.leaderboard.innerHTML, /class="lb-lvl"[^>]*>4</, "rank 4 in the list");
+    assert.match(a.leaderboard.innerHTML, /class="lb-lvl"[^>]*>1</, "rank 1 for a new pilot");
+    assert.equal(a.remotes.get(b.selfId).rank, 4);
+    assert.ok(a.remoteShipPositions().some((s) => s.id === b.selfId), "seen");
+
+    cloaked = true;
+    await frames(600);
+
+    assert.equal(shipB.cloaked, true);
+    assert.ok(!a.remoteShipPositions().some((s) => s.id === b.selfId), "gone from view and the radar");
+    assert.equal(a.remotes.get(b.selfId).visual.group.visible, false);
+
+    cloaked = false;
+    await frames(600);
+    assert.ok(a.remoteShipPositions().some((s) => s.id === b.selfId), "back");
+
+    shutdownAll();
+});
+
 test("client: other pilots' ships show their chosen design and damage, and smoke when critical", async () => {
     const server = await loadWorker();
 

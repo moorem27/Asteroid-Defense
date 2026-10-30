@@ -44,6 +44,11 @@ import { checkName, randomCallsign, noFriendlyFire } from "../public/name-filter
 // and its timing are worked out the same way on both sides.
 import { UFO, createUfoPlan, ufoState, ufoFollow, ufoLeave } from "../public/ufo.js";
 
+// Ranks and the cloak, shared with the game (public/ranks.js). A
+// cloaked ship is left out of everyone else's snapshots, can't fire,
+// and rockets don't home on it; it can still be hit.
+import { cloakUnlocked } from "../public/ranks.js";
+
 // Must match PROTOCOL_VERSION in public/multiplayer.js.
 const PROTOCOL_VERSION = 2;
 
@@ -984,6 +989,7 @@ export class Lobby extends DurableObject {
             shieldUntil: now + SHIP.spawnShieldMs,
             hitCooldownUntil: 0,
             warpUntil: 0,
+            cloaked: false,
 
             score: 0,
             kills: 0,
@@ -1119,6 +1125,9 @@ export class Lobby extends DurableObject {
         // While dead, the ship stays where it was destroyed.
         if (!ship.alive) return;
 
+        // The cloak: only once it's unlocked.
+        ship.cloaked = Number(data.ck) === 1 && cloakUnlocked(ship.score);
+
         ship.x = round2(x);
         ship.z = round2(z);
         ship.r = round2(r % (Math.PI * 2));
@@ -1131,6 +1140,9 @@ export class Lobby extends DurableObject {
     onFire(ship, data, now) {
         if (!this.round || this.round.phase !== "playing") return;
         if (!ship.alive) return;
+
+        // No weapons while cloaked.
+        if (ship.cloaked) return;
 
         const weapon = Math.round(finite(data.w, 0, 2) ?? -1);
         if (weapon < 0) return;
@@ -1349,7 +1361,8 @@ export class Lobby extends DurableObject {
             // Keep watching the pilot it came to see.
             const watched = this.findShip(this.ufo.w);
 
-            if (watched && watched.alive && this.isPresent(watched, now)) {
+            // (Not while they're cloaked: it would give them away.)
+            if (watched && watched.alive && !watched.cloaked && this.isPresent(watched, now)) {
                 const p = this.shipPosition(watched, now);
 
                 if (ufoFollow(this.ufo, Math.random, p.x, p.z, now, HALF_W, HALF_H)) {
@@ -1526,6 +1539,7 @@ export class Lobby extends DurableObject {
             ship.deaths = 0;
             ship.nextWarp = WARP.scoreInterval;
             ship.warpUntil = 0;
+            ship.cloaked = false;
             ship.lastHitBy = null;
 
             this.placeShip(ship, now);
@@ -2177,7 +2191,8 @@ export class Lobby extends DurableObject {
         for (const m of this.mines) consider("m", m, m.x, m.z);
 
         for (const s of this.ships.values()) {
-            if (!this.isTarget(s, rocket.owner, now)) continue;
+            // A cloaked ship can't be locked on to.
+            if (s.cloaked || !this.isTarget(s, rocket.owner, now)) continue;
 
             const p = this.shipPosition(s, now);
             consider("s", s, p.x, p.z);
@@ -2192,7 +2207,9 @@ export class Lobby extends DurableObject {
         if (target.kind === "a") return this.asteroids.includes(target.ref);
         if (target.kind === "m") return this.mines.includes(target.ref);
 
-        return [...this.ships.values()].includes(target.ref) && this.canBeHit(target.ref, now);
+        return [...this.ships.values()].includes(target.ref) &&
+            !target.ref.cloaked &&
+            this.canBeHit(target.ref, now);
     }
 
     targetPosition(target, now) {
@@ -2223,7 +2240,9 @@ export class Lobby extends DurableObject {
 
     randomPresentShip() {
         const now = Date.now();
-        const present = this.presentShips(now);
+        // Not a cloaked ship (a UFO or the rogue asteroid turning up
+        // beside it, or a pilot spawning next to it, would give it away).
+        const present = this.presentShips(now).filter((s) => !s.cloaked);
 
         return present.length ? present[Math.floor(Math.random() * present.length)] : null;
     }
@@ -2273,7 +2292,10 @@ export class Lobby extends DurableObject {
 
         const p = this.shipPosition(ship, now);
 
-        this.event(["sh", ship.id, ship.hull, attacker ? attacker.id : "", round2(p.x), round2(p.z)]);
+        // A cloaked ship's hit doesn't give away where it is.
+        this.event(ship.cloaked && ship.hull > 0
+            ? ["sh", ship.id, ship.hull, attacker ? attacker.id : "", null, null]
+            : ["sh", ship.id, ship.hull, attacker ? attacker.id : "", round2(p.x), round2(p.z)]);
 
         if (ship.hull > 0) return;
 
@@ -2289,6 +2311,7 @@ export class Lobby extends DurableObject {
         if (killer && this.sameClan(killer, ship)) killer = null;
 
         ship.alive = false;
+        ship.cloaked = false;
         ship.deaths++;
         ship.respawnAt = now + SHIP.respawnMs;
         ship.warpUntil = 0;
@@ -2593,6 +2616,13 @@ export class Lobby extends DurableObject {
             // reported (reports arrive unevenly).
             const p = s.alive ? this.shipPosition(s, now) : s;
 
+            // Cloaked: listed (so it isn't forgotten), but with nothing
+            // that would show where it is. Flag 8 = cloaked.
+            if (s.cloaked && s.alive) {
+                players.push([s.id, 0, 0, 0, 0, 0, 0, 8, 0, s.design ?? 0, s.hull]);
+                continue;
+            }
+
             // ... then the ship design and hull, so others can draw the
             // right ship in the right state of damage.
             players.push([s.id, round2(p.x), round2(p.z), s.r, s.vx, s.vz, s.th, flags, s.weapon, s.design ?? 0, s.hull]);
@@ -2628,6 +2658,7 @@ export class Lobby extends DurableObject {
             rs: ship.alive ? 0 : Math.max(0, ship.respawnAt - now),
             sh: ship.shieldUntil,
             w: ship.warpUntil,
+            ck: ship.cloaked ? 1 : 0,
             k: ship.kills,
             d: ship.deaths
         };

@@ -54,6 +54,7 @@ export const __test = {
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     ufo, UFO, ufoState, ufoNow,
     ships, SHIP_DESIGNS, shipExplosions, smokePuffs, damageSmoke, cycleShip, updateHUD, damagePlayer,
+    cloak,
     get multiplayer() { return multiplayer; }
 };
 `;
@@ -62,6 +63,7 @@ export const __test = {
     await copyFile(path.join(publicDir, "multiplayer.js"), path.join(dir, "multiplayer.js"));
     await copyFile(path.join(publicDir, "name-filter.js"), path.join(dir, "name-filter.js"));
     await copyFile(path.join(publicDir, "ufo.js"), path.join(dir, "ufo.js"));
+    await copyFile(path.join(publicDir, "ranks.js"), path.join(dir, "ranks.js"));
 
     const mod = await import(pathToFileURL(path.join(dir, "game.js")).href);
 
@@ -1198,6 +1200,67 @@ test("radar: shown online (bottom right), hidden in a solo game", async () => {
     await play(solo, 200);
 
     assert.equal(solo.dom.el("radar").hidden, true, "solo: no radar");
+
+    stopGames();
+});
+
+test("cloak: unlocks at 25,000; C or the button toggles it; the ship turns ghostly, can't fire, and the server hides it", async () => {
+    const game = await bootOnline();
+    const { t, dom, server } = game;
+
+    const lobby = quietLobby(server);
+    const ship = serverShip(game);
+
+    assert.equal(dom.el("cloak-toggle").hidden, true, "no button before 25,000");
+
+    dom.key("keydown", "KeyC");
+    dom.key("keyup", "KeyC");
+    assert.equal(t.cloak.active, false, "locked");
+
+    ship.score = 26000;
+    ship.dirty = true;
+    await play(game, 200, () => faceForward(game));
+
+    assert.equal(t.cloak.unlocked, true);
+    assert.equal(dom.el("cloak-toggle").hidden, false, "button appears");
+
+    const realMaterials = [];
+    t.player.hull.traverse((c) => { if (c.isMesh) realMaterials.push(c.material); });
+
+    dom.key("keydown", "KeyC");
+    dom.key("keyup", "KeyC");
+
+    assert.equal(t.cloak.active, true, "C cloaks");
+    assert.equal(dom.el("cloak-toggle").getAttribute("aria-pressed"), "true");
+    assert.equal(t.getNetworkState().cloaked, true);
+
+    const worn = [];
+    t.player.hull.traverse((c) => { if (c.isMesh) worn.push(c.material); });
+    assert.ok(worn.length > 0 && worn.every((m) => m === t.cloak.material), "the hull wears the cloak");
+
+    await play(game, 300, () => faceForward(game));
+    assert.equal(ship.cloaked, true, "server knows");
+
+    // No weapons while cloaked.
+    lobby.bullets.length = 0;
+    dom.key("keydown", "Space");
+    await play(game, 300, () => faceForward(game));
+    dom.key("keyup", "Space");
+
+    assert.equal(lobby.bullets.length, 0, "can't fire");
+    assert.equal(t.bullets.length, 0, "nothing drawn either");
+    assert.equal(dom.el("message").textContent, "WEAPONS OFFLINE WHILE CLOAKED");
+
+    // The button turns it off; the ship's own look comes back.
+    dom.el("cloak-toggle").dispatch("click");
+    assert.equal(t.cloak.active, false, "button uncloaks");
+
+    const back = [];
+    t.player.hull.traverse((c) => { if (c.isMesh) back.push(c.material); });
+    assert.deepEqual(back, realMaterials, "materials restored");
+
+    await play(game, 300, () => faceForward(game));
+    assert.equal(ship.cloaked, false, "server knows");
 
     stopGames();
 });

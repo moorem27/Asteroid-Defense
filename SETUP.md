@@ -114,6 +114,20 @@ Tags are 2–4 letters or digits and go through
 the same word filter as callsigns; renaming in or out of a clan takes effect
 straight away.
 
+### Ranks and the cloak
+
+Every pilot starts each round at rank 1 and goes up a rank every 10,000
+points. The rank shows in a small box beside their name in the lobby list
+(top right) and on the name tag over their ship.
+
+At 25,000 points a ship unlocks a cloaking device: a CLOAK button appears
+next to the weapon button (or press C). While cloaked, other pilots can't see
+the ship at all, on screen or on the radar, and rockets can't lock on to it.
+It can still be hit, and it can't fire. The pilot sees their own ship as a
+shimmering blue ghost. The cloak drops when the ship is destroyed, and locks
+again at the start of every round. The server enforces all of this
+(`public/ranks.js` holds the numbers).
+
 ### One pilot per browser
 
 Each browser is one pilot. Reloading the page, or opening the game in another
@@ -175,6 +189,7 @@ asteroid-defense/
 │   ├── style.css
 │   ├── multiplayer.js
 │   ├── name-filter.js    Callsign rules (also used by the server)
+│   ├── ranks.js          Ranks and the cloak (also used by the server)
 │   └── assets/           ← copy your GLB models and PNGs here
 └── test/                 Automated tests (no Cloudflare account needed)
 ```

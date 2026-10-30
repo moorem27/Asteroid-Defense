@@ -112,13 +112,22 @@
                 <div class="hull-fill" id="hull-fill"></div>
             </div>
 
-            <!-- Weapon switch: appears once a second weapon unlocks.
-                 Tap (or click) for the next weapon. -->
-            <button id="weapon-switch" class="weapon-switch" type="button" hidden
-                    aria-label="Switch weapon">
-                <span id="weapon-name">BLASTER</span>
-                <span class="weapon-cycle" aria-hidden="true">⇄</span>
-            </button>
+            <div class="hud-buttons">
+                <!-- Weapon switch: appears once a second weapon unlocks.
+                     Tap (or click) for the next weapon. -->
+                <button id="weapon-switch" class="weapon-switch" type="button" hidden
+                        aria-label="Switch weapon">
+                    <span id="weapon-name">BLASTER</span>
+                    <span class="weapon-cycle" aria-hidden="true">⇄</span>
+                </button>
+
+                <!-- Cloak: appears at 25,000 points. Tap (or C) to turn it
+                     on or off. -->
+                <button id="cloak-toggle" class="weapon-switch cloak-toggle" type="button" hidden
+                        aria-label="Cloak" aria-pressed="false">
+                    <span id="cloak-name">CLOAK</span>
+                </button>
+            </div>
         </div>
 
         <div class="hud-block hud-center">

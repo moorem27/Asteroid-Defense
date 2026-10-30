@@ -304,9 +304,11 @@ export async function loadWorker(env = {}) {
 
     const filterUrl = pathToFileURL(path.join(here, "../public/name-filter.js")).href;
     const ufoUrl = pathToFileURL(path.join(here, "../public/ufo.js")).href;
+    const ranksUrl = pathToFileURL(path.join(here, "../public/ranks.js")).href;
     const withFilter = patched
         .replace('"../public/name-filter.js"', JSON.stringify(filterUrl))
-        .replace('"../public/ufo.js"', JSON.stringify(ufoUrl));
+        .replace('"../public/ufo.js"', JSON.stringify(ufoUrl))
+        .replace('"../public/ranks.js"', JSON.stringify(ranksUrl));
 
     const outDir = path.join(here, ".build");
     await mkdir(outDir, { recursive: true });

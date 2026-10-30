@@ -5,6 +5,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 // UFO visits: flight plans shared with the server (see UFO VISITS).
 import { UFO, createUfoPlan, ufoState, ufoFollow, ufoLeave, ufoZoomAt, readUfoPlan } from "./ufo.js";
+import { cloakUnlocked } from "./ranks.js";
 
 
 // ============================================================
@@ -1009,6 +1010,8 @@ window.addEventListener("keydown", (event) => {
         cycleWeapon(-1);
     } else if (event.code === "KeyE" && !event.repeat) {
         cycleWeapon(1);
+    } else if (event.code === "KeyC" && !event.repeat) {
+        toggleCloak();
     }
 
     if (
@@ -1135,6 +1138,12 @@ renderer.domElement.addEventListener("wheel", (event) => {
 $("weapon-switch")?.addEventListener("click", (event) => {
     event.preventDefault();
     cycleWeapon(1);
+});
+
+// The cloak button (appears at 25,000 points).
+$("cloak-toggle")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleCloak();
 });
 
 // ------------------------------------------------------------
@@ -1544,6 +1553,9 @@ function updateShipModel() {
 
     ships.shownDesign = design;
     ships.shownDamage = damage;
+
+    // Still cloaked: the new model wears the cloak too.
+    redressHull();
 }
 
 // Thick, dark smoke from damaged ships (yours and other pilots'). Its
@@ -2066,6 +2078,281 @@ function drawRadar(ctx, size) {
     ctx.beginPath();
     ctx.arc(c, c, r, 0, Math.PI * 2);
     ctx.stroke();
+}
+
+// ------------------------------------------------------------
+// CLOAKING DEVICE
+// Unlocks at CLOAK_UNLOCK_SCORE (public/ranks.js). While it's on, other
+// pilots can't see the ship at all, not on screen and not on the radar
+// (the server leaves it out of what it sends them), but it can still
+// be hit, and its weapons are offline. The pilot sees their own ship
+// as a wavy, glowing, see-through blue ghost. Toggle with the CLOAK
+// button or C.
+// ------------------------------------------------------------
+
+const CLOAK = {
+    color: [0.35, 0.78, 1.0],
+
+    // The shimmer when it switches on or off (seconds).
+    flashSec: 0.6,
+
+    // The ripple ring that spreads out when it switches.
+    rippleSec: 0.55,
+    rippleSize: 3.4,
+
+    // "WEAPONS OFFLINE" at most this often (seconds).
+    warnEvery: 1.2
+};
+
+const cloak = {
+    unlocked: false,
+    active: false,
+    flash: 0,
+    time: 0,
+    warnClock: 0,
+    material: null,
+    ripple: null,
+    rippleAge: -1,
+
+    // Meshes wearing the cloak material, with their own materials.
+    swapped: []
+};
+
+const CLOAK_VERTEX_SHADER = `
+uniform float uTime;
+uniform float uFlash;
+varying vec3 vNormal;
+varying vec3 vWorld;
+varying float vWave;
+
+void main() {
+    vec3 p = position;
+
+    // Ripples running over the hull.
+    float w = sin(p.z * 7.0 + uTime * 7.0) * 0.5 + sin(p.x * 9.0 - uTime * 5.0) * 0.5;
+    p += normal * w * (0.03 + uFlash * 0.09);
+
+    vec4 world = modelMatrix * vec4(p, 1.0);
+
+    vNormal = normalize(normalMatrix * normal);
+    vWorld = world.xyz;
+    vWave = w;
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+}
+`;
+
+const CLOAK_FRAGMENT_SHADER = `
+uniform float uTime;
+uniform float uFlash;
+uniform vec3 uColor;
+varying vec3 vNormal;
+varying vec3 vWorld;
+varying float vWave;
+
+void main() {
+    // The camera looks straight down, so edges are where the surface
+    // turns away from it: they glow, the middle is nearly clear.
+    float rim = pow(1.0 - abs(normalize(vNormal).z), 2.0);
+
+    // Bands of light rolling down the ship.
+    float bands = 0.5 + 0.5 * sin(vWorld.z * 13.0 - uTime * 9.0 + vWave * 2.5);
+    float flicker = 0.85 + 0.15 * sin(uTime * 23.0 + vWorld.x * 5.0);
+
+    float glow = (0.1 + rim * 0.8 + bands * bands * 0.18) * flicker + uFlash * 0.7;
+
+    gl_FragColor = vec4(uColor * glow, 1.0);
+}
+`;
+
+function cloakMaterial() {
+    if (cloak.material) return cloak.material;
+
+    cloak.material = new THREE.ShaderMaterial({
+        vertexShader: CLOAK_VERTEX_SHADER,
+        fragmentShader: CLOAK_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+        uniforms: {
+            uTime: { value: 0 },
+            uFlash: { value: 0 },
+            uColor: { value: new THREE.Color(...CLOAK.color) }
+        }
+    });
+
+    return cloak.material;
+}
+
+// Put the cloak material on the ship's hull (or take it off).
+function dressHull(on) {
+    for (const { mesh, material } of cloak.swapped) mesh.material = material;
+    cloak.swapped.length = 0;
+
+    if (!on || !player.hull) return;
+
+    const material = cloakMaterial();
+
+    player.hull.traverse((child) => {
+        if (!child.isMesh) return;
+
+        cloak.swapped.push({ mesh: child, material: child.material });
+        child.material = material;
+    });
+}
+
+// The ring of light that spreads out from the ship as it cloaks or
+// uncloaks.
+function startCloakRipple() {
+    if (!cloak.ripple) {
+        const geometry = new THREE.RingGeometry(0.82, 1, 48);
+        geometry.rotateX?.(-Math.PI / 2);
+
+        cloak.ripple = new THREE.Mesh(
+            geometry,
+            new THREE.MeshBasicMaterial({
+                color: new THREE.Color(...CLOAK.color),
+                transparent: true,
+                opacity: 0,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+                toneMapped: false
+            })
+        );
+        cloak.ripple.visible = false;
+        scene.add(cloak.ripple);
+    }
+
+    cloak.rippleAge = 0;
+}
+
+function canCloak() {
+    return cloak.unlocked && state.running && !net.dead && !blackHole.active &&
+        Boolean(player.mesh) && state.lives > 0;
+}
+
+function setCloak(on) {
+    on = Boolean(on) && canCloak();
+    if (on === cloak.active) return;
+
+    cloak.active = on;
+    cloak.flash = 1;
+
+    dressHull(on);
+    startCloakRipple();
+    updateCloakHUD();
+
+    if (!blackHole.active) {
+        $("message").textContent = on ? "CLOAK ENGAGED — WEAPONS OFFLINE" : "CLOAK DISENGAGED";
+    }
+}
+
+function toggleCloak() {
+    if (!cloak.unlocked) return;
+    setCloak(!cloak.active);
+}
+
+// Called with the weapon unlocks, whenever the score changes.
+function checkCloakUnlock() {
+    if (cloak.unlocked || !cloakUnlocked(state.score)) return;
+
+    cloak.unlocked = true;
+
+    if (!blackHole.active) {
+        $("message").textContent = isTouchScreen()
+            ? "CLOAKING DEVICE ONLINE — TAP CLOAK"
+            : "CLOAKING DEVICE ONLINE — PRESS C";
+    }
+
+    updateCloakHUD(true);
+}
+
+// A new game or round: locked again.
+function resetCloak() {
+    if (cloak.active) dressHull(false);
+
+    cloak.active = false;
+    cloak.unlocked = false;
+    cloak.flash = 0;
+
+    updateCloakHUD();
+}
+
+// The hull model was swapped (damage, or a new design): dress the new
+// one.
+function redressHull() {
+    if (cloak.active) dressHull(true);
+}
+
+// Firing while cloaked: weapons are offline (says so now and then).
+function cloakBlocksFire() {
+    if (!cloak.active) return false;
+
+    if (cloak.warnClock <= 0 && !blackHole.active) {
+        $("message").textContent = "WEAPONS OFFLINE WHILE CLOAKED";
+        cloak.warnClock = CLOAK.warnEvery;
+    }
+
+    return true;
+}
+
+function updateCloakHUD(flash = false) {
+    const button = $("cloak-toggle");
+    if (!button) return;
+
+    button.hidden = !cloak.unlocked;
+    button.setAttribute?.("aria-pressed", cloak.active ? "true" : "false");
+
+    const label = $("cloak-name");
+    const text = cloak.active ? "CLOAKED" : "CLOAK";
+    if (label && label.textContent !== text) label.textContent = text;
+
+    if (flash) {
+        button.classList.remove("switched");
+        void button.offsetWidth;
+        button.classList.add("switched");
+    }
+}
+
+function updateCloak(dt) {
+    cloak.time += dt;
+    cloak.warnClock = Math.max(0, cloak.warnClock - dt);
+    cloak.flash = Math.max(0, cloak.flash - dt / CLOAK.flashSec);
+
+    // Dropped when the ship is destroyed, swallowed, or the game ends.
+    if (cloak.active && !canCloak()) {
+        cloak.active = false;
+        dressHull(false);
+        updateCloakHUD();
+    }
+
+    if (cloak.material) {
+        cloak.material.uniforms.uTime.value = cloak.time;
+        cloak.material.uniforms.uFlash.value = cloak.flash * cloak.flash;
+    }
+
+    const ripple = cloak.ripple;
+
+    if (ripple && cloak.rippleAge >= 0) {
+        cloak.rippleAge += dt;
+
+        const k = cloak.rippleAge / CLOAK.rippleSec;
+
+        if (k >= 1) {
+            ripple.visible = false;
+            cloak.rippleAge = -1;
+        } else {
+            const ease = 1 - (1 - k) * (1 - k);
+
+            ripple.visible = true;
+            ripple.position.set(player.position.x, 0.2, player.position.z);
+            ripple.scale.setScalar(0.6 + ease * CLOAK.rippleSize);
+            ripple.material.opacity = (1 - k) * 0.85;
+        }
+    }
 }
 
 // ------------------------------------------------------------
@@ -2978,6 +3265,9 @@ function checkWeaponUnlocks() {
         console.info(`Rockets unlocked at ${ROCKET_UNLOCK_SCORE} points.`);
     }
 
+    // The cloaking device, at 25,000.
+    checkCloakUnlock();
+
     updateWeaponHUD();
 }
 
@@ -3052,6 +3342,9 @@ function updateWeaponHUD(flash = false) {
 
 // Fire, click and tap all fire the selected weapon.
 function fireSelectedWeapon() {
+    // No weapons while cloaked.
+    if (cloakBlocksFire()) return;
+
     if (weapons.selected === "laser") {
         tryFireLaser();
     } else if (weapons.selected === "rockets") {
@@ -3808,6 +4101,9 @@ function resetWeapons() {
     weapons.rocketSide = 1;
 
     updateWeaponHUD();
+
+    // The cloak locks again too.
+    resetCloak();
 }
 
 // ============================================================
@@ -9282,6 +9578,9 @@ function render() {
     // The radar (online): where the other pilots are.
     updateRadar(dt);
 
+    // The cloak's shimmer (and dropping it if the ship is lost).
+    updateCloak(dt);
+
     updateParallax();
     updateDust();
 
@@ -9358,7 +9657,8 @@ function getNetworkState() {
         thrust: afterburners.active ? 1 : retroThrusters.active ? -1 : 0,
         life: net.life,
         weapon: currentWeapon().net,
-        design: currentDesign()
+        design: currentDesign(),
+        cloaked: cloak.active
     };
 }
 
@@ -9989,7 +10289,10 @@ function applyNetEvent(e, lag) {
                     }
                 }
             } else {
-                createExplosion(point(e[4], e[5]), 0.6, 8);
+                // (No position: that ship is cloaked.)
+                if (Number.isFinite(e[4]) && Number.isFinite(e[5])) {
+                    createExplosion(point(e[4], e[5]), 0.6, 8);
+                }
 
                 if (netSelf(e[3])) {
                     $("message").textContent = `DIRECT HIT ON ${netName(e[1])} · +200`;

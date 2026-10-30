@@ -237,6 +237,9 @@ pointer-events: none;
 
 .leaderboard .lb-score { min-width: 7ch; color: white; }
 
+/* A pilot's rank (a new one every 10,000 points), boxed beside the name. */
+.leaderboard .lb-lvl { min-width: 2.2ch; padding: 0 0.35em; border: 1px solid currentColor; border-radius: 2px; line-height: 1.35; align-self: center; text-align: center; color: var(--cyan); font-size: 0.85em; }
+
 .leaderboard .lb-me { opacity: 1; text-shadow: 0 0 8px rgba(255, 255, 255, 0.5); }
 
 .leaderboard .lb-gap { justify-content: flex-end; color: var(--cyan); }
@@ -272,6 +275,24 @@ pointer-events: none;
 .weapon-switch[data-weapon="rockets"] { border-color: var(--yellow); box-shadow: 0 0 8px rgba(255, 230, 109, 0.4); }
 
 .weapon-switch.switched { animation: weapon-switched 300ms ease-out; }
+
+/* The weapon and cloak buttons side by side. */
+.hud-buttons { display: flex; flex-wrap: wrap; gap: 0 calc(6 * var(--u)); align-items: flex-start; }
+
+/* The cloak button: icy blue; shimmering while cloaked. */
+.cloak-toggle { border-color: #5ac8ff; color: #bfe9ff; }
+
+.cloak-toggle[aria-pressed="true"] {
+    background: rgba(40, 120, 200, 0.35);
+    color: white;
+    box-shadow: 0 0 10px rgba(90, 200, 255, 0.7), inset 0 0 8px rgba(90, 200, 255, 0.5);
+    animation: cloak-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes cloak-shimmer {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
 
 @keyframes weapon-switched {
     from { transform: scale(1.12); }
