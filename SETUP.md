@@ -114,6 +114,27 @@ Tags are 2–4 letters or digits and go through
 the same word filter as callsigns; renaming in or out of a clan takes effect
 straight away.
 
+### Maps
+
+Each time the game loads it picks one of two maps at random. Maps only change
+the scenery; the game plays the same.
+
+- **Deep space:** the nebula and star layers.
+- **Low orbit:** looking straight down from orbit on a chain of tropical
+  islands. The sea and islands far below barely move, clouds drift past faster,
+  and thin high cirrus faster still. At the corners of the screen the planet's
+  edge curves away, with a thin line of atmosphere and black space with faint
+  stars beyond, so it's clear the ships are still in space; near the edge of
+  the playfield, the planet's edge slides further into view. Nothing star-like
+  appears over the sea or land.
+
+Add `?map=space` or `?map=orbit` to the address to choose one (handy for
+testing). The orbit map's images are `public/assets/bg_orbit_ground.jpg`,
+`bg_orbit_clouds.png` and `bg_orbit_haze.png`, made by
+`blender/generate_islands.py` (plain Python with numpy and Pillow; change
+`SEED` in it for a different chain of islands). If they're missing, the game
+uses deep space instead.
+
 ### Ranks and the cloak
 
 Every pilot starts each round at rank 1 and goes up a rank every 10,000

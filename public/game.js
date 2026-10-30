@@ -84,32 +84,116 @@ function loadLegacyBackground() {
 // tile:   how many world units one copy of the image covers
 // ============================================================
 
-const PARALLAX_LAYERS = [
-    {
-        file: "bg_nebula.png",
-        factor: 0.15,
-        tile: 90,
-        opacity: 1,
-        transparent: false,
-        y: -6
+// ------------------------------------------------------------
+// MAPS
+// Each map is a set of three parallax layers: an opaque back layer,
+// then two see-through ones (the warp and black hole lenses expect
+// exactly three, in that order). One is picked at random every time
+// the game loads; add ?map=space or ?map=orbit to the address to
+// choose. Maps only change the scenery: the game plays the same.
+//
+// "orbit" is low Earth orbit over a chain of tropical islands
+// (blender/generate_islands.py): the sea and islands far below
+// barely move, clouds drift past faster, and thin high haze faster
+// still. Nothing star-like over the sea or land (no dust specks);
+// stars only show in the black space beyond the planet's edge at the
+// screen's corners (see ORBIT LIMB below), which makes it clear the
+// ships are still in space.
+// ------------------------------------------------------------
+
+const MAPS = {
+    space: {
+        name: "DEEP SPACE",
+        background: 0x050713,
+        dust: 0xa9c8ff,
+        dustOpacity: 0.55,
+        limb: false,
+        layers: [
+            {
+                file: "bg_nebula.png",
+                factor: 0.15,
+                tile: 90,
+                opacity: 1,
+                transparent: false,
+                y: -6
+            },
+            {
+                file: "bg_stars_far.png",
+                factor: 0.4,
+                tile: 55,
+                opacity: 0.9,
+                transparent: true,
+                y: -5
+            },
+            {
+                file: "bg_stars_near.png",
+                factor: 0.7,
+                tile: 70,
+                opacity: 1,
+                transparent: true,
+                y: -4
+            }
+        ]
     },
-    {
-        file: "bg_stars_far.png",
-        factor: 0.4,
-        tile: 55,
-        opacity: 0.9,
-        transparent: true,
-        y: -5
-    },
-    {
-        file: "bg_stars_near.png",
-        factor: 0.7,
-        tile: 70,
-        opacity: 1,
-        transparent: true,
-        y: -4
+
+    orbit: {
+        name: "LOW ORBIT",
+        background: 0x0a2340,
+        // No dust: over the sea and land, specks would look like stars.
+        // (Stars only show in the black space beyond the planet's edge.)
+        dust: 0xc4dcff,
+        dustOpacity: 0,
+        limb: true,
+        layers: [
+            {
+                // Ocean and islands, 400 km down: hardly moves.
+                file: "bg_orbit_ground.jpg",
+                factor: 0.1,
+                tile: 80,
+                opacity: 1,
+                transparent: false,
+                y: -6
+            },
+            {
+                // Clouds: much nearer, so they slide past faster.
+                file: "bg_orbit_clouds.png",
+                factor: 0.3,
+                tile: 65,
+                opacity: 0.95,
+                transparent: true,
+                y: -5
+            },
+            {
+                // Thin high cirrus: the nearest, fastest layer.
+                file: "bg_orbit_haze.png",
+                factor: 0.75,
+                tile: 95,
+                opacity: 1,
+                transparent: true,
+                y: -4
+            }
+        ]
     }
-];
+};
+
+function pickMap() {
+    try {
+        const wanted = new URLSearchParams(location.search).get("map");
+        if (wanted && MAPS[wanted]) return wanted;
+    } catch {
+        // No address to read (tests): pick at random.
+    }
+
+    const names = Object.keys(MAPS);
+    return names[Math.floor(Math.random() * names.length)];
+}
+
+let mapName = pickMap();
+let currentMap = MAPS[mapName];
+let PARALLAX_LAYERS = currentMap.layers;
+
+window.ASTEROID_DEFENSE_MAP = mapName;
+scene.background = new THREE.Color(currentMap.background);
 
 const parallaxMeshes = [];
 
@@ -171,12 +255,6 @@ function loadParallaxBackground() {
 
                 failed = true;
 
-                console.warn(
-                    `Parallax layer ${layer.file} not found; using ` +
-                    "background_space.png instead. Run " +
-                    "blender/generate_background.py to create the layers."
-                );
-
                 for (const mesh of parallaxMeshes) {
                     scene.remove(mesh);
                     mesh.material.map.dispose();
@@ -185,15 +263,49 @@ function loadParallaxBackground() {
 
                 parallaxMeshes.length = 0;
 
+                // A map whose images are missing: fall back to deep
+                // space, then to the single original image.
+                if (mapName !== "space") {
+                    console.warn(`Map "${mapName}": ${layer.file} not found; using deep space instead.`);
+                    setMap("space");
+                    loadParallaxBackground();
+                    return;
+                }
+
+                console.warn(
+                    `Parallax layer ${layer.file} not found; using ` +
+                    "background_space.png instead. Run " +
+                    "blender/generate_background.py to create the layers."
+                );
+
                 loadLegacyBackground();
             }
         );
     });
 }
 
+// Switch to another map's scenery (before its layers load).
+function setMap(name) {
+    mapName = name;
+    currentMap = MAPS[name];
+    PARALLAX_LAYERS = currentMap.layers;
+
+    window.ASTEROID_DEFENSE_MAP = name;
+    scene.background = new THREE.Color(currentMap.background);
+
+    if (typeof dust !== "undefined") {
+        dust.material.color.set?.(currentMap.dust);
+        dust.material.opacity = currentMap.dustOpacity;
+        dust.visible = currentMap.dustOpacity > 0;
+    }
+    if (typeof orbitLimb !== "undefined" && orbitLimb) orbitLimb.visible = currentMap.limb;
+}
+
 // Keep every layer centered on the camera, sized to the view, and
 // scroll its texture by `factor` times the camera's position.
 function updateParallax() {
+    updateOrbitLimb();
+
     if (parallaxMeshes.length === 0) return;
 
     // A little extra so screen shake never reveals an edge.
@@ -216,6 +328,139 @@ function updateParallax() {
         );
     }
 }
+
+// ------------------------------------------------------------
+// ORBIT LIMB (the "orbit" map)
+// Fixed to the screen, over the scenery and under the game: the edge
+// of the planet curving away at the corners, a thin bright line of
+// atmosphere, and black space with faint stars beyond it (stars only
+// ever show out there, never over the sea or land). Toward the edge
+// the ground fades into blue haze, as it does seen from orbit. Near
+// the edge of the playfield the planet's edge slides further into
+// view on that side, showing more of space.
+// ------------------------------------------------------------
+
+const ORBIT_LIMB_VERTEX_SHADER = /* glsl */ `
+    varying vec2 vUv;
+
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const ORBIT_LIMB_FRAGMENT_SHADER = /* glsl */ `
+    uniform vec2 uSize;
+    uniform vec2 uShift;
+    uniform float uTime;
+
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    void main() {
+        // World units from the planet's center (y up the screen): the
+        // screen's center, moved away when near the playfield's edge.
+        vec2 screenP = (vUv - 0.5) * uSize;
+        vec2 p = screenP + uShift;
+        float r = length(p);
+
+        // The planet's edge sits just inside the screen's corners.
+        float R = 0.5 * length(uSize) * 0.9;
+
+        // Haze thickening toward the edge.
+        float haze = smoothstep(R * 0.62, R, r);
+        vec3 color = vec3(0.33, 0.58, 0.95);
+        float alpha = haze * haze * haze * 0.5;
+
+        // Beyond the edge: black space, a few stars.
+        float space = smoothstep(R, R + R * 0.012, r);
+        // (Stars are fixed to the screen, so they don't slide with the
+        // planet's edge.)
+        // One possible star per 1.5-unit cell, at a random spot in it,
+        // drawn as a tiny soft point (about a pixel or two).
+        vec2 grid = screenP / 1.5;
+        vec2 cell = floor(grid);
+        vec2 spot = vec2(hash(cell + 1.3), hash(cell + 9.1));
+        float d = length((fract(grid) - spot) * 1.5);
+        float star = step(0.82, hash(cell)) * (1.0 - smoothstep(0.02, 0.07, d)) * (0.35 + 0.4 * hash(cell + 3.0));
+        float twinkle = 0.75 + 0.25 * sin(uTime * 2.0 + hash(cell + 7.0) * 20.0);
+        vec3 spaceColor = vec3(0.01, 0.015, 0.04) + vec3(0.85, 0.9, 1.0) * star * twinkle * smoothstep(R * 1.04, R * 1.1, r);
+
+        color = mix(color, spaceColor, space);
+        alpha = mix(alpha, 1.0, space);
+
+        // The atmosphere: a thin bright band right at the edge, with a
+        // softer blue glow fading out into space.
+        float band = exp(-pow((r - R) / (R * 0.006), 2.0));
+        float glow = exp(-max(r - R, 0.0) / (R * 0.035)) * space;
+
+        color += vec3(0.55, 0.85, 1.0) * band * 1.2 + vec3(0.15, 0.35, 0.9) * glow * 0.6;
+        alpha = max(alpha, band);
+
+        gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+
+        #include <colorspace_fragment>
+    }
+`;
+
+const orbitLimb = new THREE.Mesh(
+    parallaxGeometry,
+    new THREE.ShaderMaterial({
+        vertexShader: ORBIT_LIMB_VERTEX_SHADER,
+        fragmentShader: ORBIT_LIMB_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false,
+        uniforms: {
+            uSize: { value: new THREE.Vector2(50, 32) },
+            uShift: { value: new THREE.Vector2(0, 0) },
+            uTime: { value: 0 }
+        }
+    })
+);
+
+orbitLimb.name = "OrbitLimb";
+orbitLimb.frustumCulled = false;
+
+// After the scenery layers (-10 to -8), before the dust (-5).
+orbitLimb.renderOrder = -7;
+orbitLimb.visible = currentMap.limb;
+scene.add(orbitLimb);
+
+function updateOrbitLimb() {
+    if (!orbitLimb.visible) return;
+
+    const width = (camera.right - camera.left) * 1.1;
+    const height = (camera.top - camera.bottom) * 1.1;
+
+    orbitLimb.position.set(cameraRig.x, -3.5, cameraRig.z);
+    orbitLimb.scale.set(width, 1, height);
+
+    orbitLimb.material.uniforms.uSize.value.set(width, height);
+    orbitLimb.material.uniforms.uTime.value = performance.now() / 1000;
+
+    // How close the view is to the playfield's edge (-1 to 1 each
+    // way; screen up is world -z). Past halfway there, the planet's
+    // edge starts sliding into view on that side.
+    const limitX = HALF_W - viewHalfWidth();
+    const limitZ = HALF_H - viewHalfHeight();
+    const nearX = limitX > 1 ? clamp(cameraRig.x / limitX, -1, 1) : 0;
+    const nearY = limitZ > 1 ? clamp(-cameraRig.z / limitZ, -1, 1) : 0;
+    const ease = (k) => {
+        const t = clamp((Math.abs(k) - 0.45) / 0.55, 0, 1);
+        return Math.sign(k) * t * t * (3 - 2 * t);
+    };
+
+    orbitLimb.material.uniforms.uShift.value.set(
+        ease(nearX) * width * 0.25,
+        ease(nearY) * height * 0.25
+    );
+}
+
+console.info(`Map: ${currentMap.name}`);
 
 loadParallaxBackground();
 
@@ -259,11 +504,11 @@ dustGeometry.setAttribute("position", dustAttribute);
 const dust = new THREE.Points(
     dustGeometry,
     new THREE.PointsMaterial({
-        color: DUST_CONFIG.color,
+        color: currentMap.dust ?? DUST_CONFIG.color,
         size: DUST_CONFIG.size,
         sizeAttenuation: false,
         transparent: true,
-        opacity: DUST_CONFIG.opacity,
+        opacity: currentMap.dustOpacity ?? DUST_CONFIG.opacity,
         depthWrite: false,
         fog: false
     })
@@ -272,6 +517,8 @@ const dust = new THREE.Points(
 dust.name = "SpaceDust";
 dust.frustumCulled = false;
 dust.renderOrder = -5;
+
+dust.visible = (currentMap.dustOpacity ?? DUST_CONFIG.opacity) > 0;
 
 scene.add(dust);
 
