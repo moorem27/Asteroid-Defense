@@ -1181,6 +1181,27 @@ test("solo: a hit from the rogue asteroid destroys the ship outright", async () 
     stopGames();
 });
 
+test("radar: shown online (bottom right), hidden in a solo game", async () => {
+    const game = await bootOnline();
+    const { t, dom } = game;
+
+    await play(game, 200);
+    assert.equal(dom.el("radar").hidden, false, "online: radar on");
+
+    stopGames();
+
+    const server = await loadWorker();
+    server.down = true;
+
+    const solo = await loadGame(server);
+    await waitFor(() => solo.t.state.running, 3000, "running");
+    await play(solo, 200);
+
+    assert.equal(solo.dom.el("radar").hidden, true, "solo: no radar");
+
+    stopGames();
+});
+
 test("mouse controls are unchanged: drag steers toward the cursor, click fires", async () => {
     const game = await soloGame();
     const { t } = game;

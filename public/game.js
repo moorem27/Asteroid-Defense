@@ -1918,6 +1918,177 @@ function updateShipExplosions(dt) {
 }
 
 // ------------------------------------------------------------
+// RADAR
+// An old-school round radar in the bottom-right corner, shown online.
+// Other pilots within range appear as blips where they really are;
+// farther ones sit on the rim, showing only their direction. No names,
+// no colors: every blip looks the same. A sweep circles round and each
+// blip flares as it passes, then fades.
+// The radar is "north up", like the screen (it doesn't turn with the
+// ship).
+// ------------------------------------------------------------
+
+const RADAR = {
+    // World units from your ship to the radar's edge (the screen is
+    // about 32 units tall), and seconds per sweep.
+    range: 70,
+    sweepSec: 2.4,
+
+    // Redraws per second (it doesn't need every frame).
+    fps: 30,
+
+    color: "57, 255, 122"
+};
+
+const radar = {
+    canvas: null,
+    ctx: null,
+    size: 0,
+    sweep: 0,
+    clock: 0,
+    shown: false
+};
+
+function updateRadar(dt) {
+    const canvas = radar.canvas ?? (radar.canvas = $("radar"));
+    if (!canvas) return;
+
+    const show = net.active && state.running && !blackHole.active;
+
+    if (show !== radar.shown) {
+        radar.shown = show;
+        canvas.hidden = !show;
+    }
+
+    if (!show) return;
+
+    radar.sweep = (radar.sweep + (dt / RADAR.sweepSec) * Math.PI * 2) % (Math.PI * 2);
+    radar.clock -= dt;
+
+    if (radar.clock > 0) return;
+    radar.clock = 1 / RADAR.fps;
+
+    radar.ctx ??= canvas.getContext?.("2d") ?? null;
+    const ctx = radar.ctx;
+    if (!ctx) return;
+
+    // Keep the drawing sharp at the size it's shown.
+    const css = canvas.clientWidth || 104;
+    const pixels = Math.round(css * Math.min(window.devicePixelRatio || 1, 2));
+
+    if (pixels !== radar.size) {
+        radar.size = pixels;
+        canvas.width = pixels;
+        canvas.height = pixels;
+    }
+
+    drawRadar(ctx, pixels);
+}
+
+function drawRadar(ctx, size) {
+    const c = size / 2;
+    const r = c - Math.max(2, size * 0.02);
+    const green = (a) => `rgba(${RADAR.color}, ${a})`;
+
+    ctx.clearRect(0, 0, size, size);
+
+    // Screen: dark glass with a faint glow.
+    const glass = ctx.createRadialGradient(c, c, 0, c, c, r);
+    glass.addColorStop(0, "rgba(6, 40, 22, 0.85)");
+    glass.addColorStop(1, "rgba(2, 14, 8, 0.85)");
+
+    ctx.fillStyle = glass;
+    ctx.beginPath();
+    ctx.arc(c, c, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Range rings and crosshairs.
+    ctx.lineWidth = Math.max(1, size * 0.006);
+    ctx.strokeStyle = green(0.28);
+
+    for (const k of [1 / 3, 2 / 3]) {
+        ctx.beginPath();
+        ctx.arc(c, c, r * k, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(c - r, c); ctx.lineTo(c + r, c);
+    ctx.moveTo(c, c - r); ctx.lineTo(c, c + r);
+    ctx.stroke();
+
+    // The sweep: a bright leading edge with a fading trail behind it.
+    const trail = 0.9;
+    const steps = 16;
+
+    for (let i = 0; i < steps; i++) {
+        const a0 = radar.sweep - trail * (i + 1) / steps;
+        const a1 = radar.sweep - trail * i / steps;
+
+        ctx.fillStyle = green(0.22 * (1 - i / steps));
+        ctx.beginPath();
+        ctx.moveTo(c, c);
+        ctx.arc(c, c, r, a0, a1);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    ctx.strokeStyle = green(0.8);
+    ctx.lineWidth = Math.max(1, size * 0.012);
+    ctx.beginPath();
+    ctx.moveTo(c, c);
+    ctx.lineTo(c + Math.cos(radar.sweep) * r, c + Math.sin(radar.sweep) * r);
+    ctx.stroke();
+
+    // Blips. The canvas's x is the world's x and its y is the world's z,
+    // which matches the screen (screen up is -z).
+    const ships = multiplayer ? multiplayer.remoteShipPositions() : [];
+    const px = player.position.x;
+    const pz = player.position.z;
+    const blip = Math.max(2, size * 0.032);
+
+    for (const ship of ships) {
+        const dx = ship.x - px;
+        const dz = ship.z - pz;
+        const d = Math.hypot(dx, dz);
+        if (d < 0.01) continue;
+
+        const far = d > RADAR.range;
+        const k = far ? 1 : d / RADAR.range;
+        const x = c + (dx / d) * k * (far ? r - blip * 1.3 : r);
+        const y = c + (dz / d) * k * (far ? r - blip * 1.3 : r);
+
+        // How long since the sweep passed it: bright, then fading.
+        const angle = Math.atan2(dz, dx);
+        const behind = ((radar.sweep - angle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+        const glow = Math.max(0.3, 1 - behind / (Math.PI * 2));
+
+        ctx.fillStyle = green(glow * (far ? 0.6 : 1));
+        ctx.shadowColor = green(glow);
+        ctx.shadowBlur = blip * 2 * glow;
+
+        ctx.beginPath();
+        ctx.arc(x, y, far ? blip * 0.7 : blip, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    ctx.shadowBlur = 0;
+
+    // You, in the middle.
+    ctx.fillStyle = "rgba(220, 255, 230, 0.95)";
+    ctx.beginPath();
+    ctx.arc(c, c, blip * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Bezel.
+    ctx.strokeStyle = green(0.6);
+    ctx.lineWidth = Math.max(1.5, size * 0.018);
+    ctx.beginPath();
+    ctx.arc(c, c, r, 0, Math.PI * 2);
+    ctx.stroke();
+}
+
+// ------------------------------------------------------------
 // AFTERBURNER SYSTEM
 // Seven layered GLB effects attached to the spaceship.
 // ------------------------------------------------------------
@@ -9128,6 +9299,9 @@ function render() {
     // stop the frame.)
     multiplayer?.update(dt, getNetworkState());
 
+    // The radar (online): where the other pilots are.
+    updateRadar(dt);
+
     updateParallax();
     updateDust();
 
@@ -9660,6 +9834,9 @@ function netBulletSparks() {
 
         if (!touching) {
             for (const ship of ships) {
+                // Teammates' ships don't stop your shots.
+                if (ship.ally) continue;
+
                 if (circlesOverlap(bullet.position, ship, bullet.radius, player.radius)) {
                     touching = true;
                     break;

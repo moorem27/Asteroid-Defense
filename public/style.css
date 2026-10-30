@@ -438,6 +438,8 @@ body.results-open #bottom-hud {
 
 .callsign-input:focus { box-shadow: 0 0 10px rgba(255, 63, 159, 0.6); }
 
+.callsign-hint { margin-top: calc(10 * var(--u)); color: var(--cyan); font-size: calc(7 * var(--u)); line-height: 1.7; opacity: 0.85; }
+
 .callsign-error { min-height: 2.4em; margin-top: calc(10 * var(--u)); color: var(--yellow); font-size: calc(8 * var(--u)); line-height: 1.6; }
 
 .callsign-buttons { display: flex; gap: calc(10 * var(--u)); margin-top: calc(6 * var(--u)); }
@@ -466,6 +468,21 @@ body.results-open #bottom-hud {
 #net-status[data-state="offline"] { color: #8f93b8; }
 
 .mission-goal { margin: calc(4 * var(--u)) 0 0; color: var(--cyan); font-size: calc(8 * var(--u)); line-height: 2; overflow-wrap: anywhere; }
+
+/* ============================================================
+   RADAR (bottom right, online)
+   ============================================================ */
+
+.radar {
+    display: block;
+    width: calc(104 * var(--u));
+    height: calc(104 * var(--u));
+    margin: 0 0 calc(8 * var(--u)) auto;
+    border-radius: 50%;
+    box-shadow: 0 0 calc(10 * var(--u)) rgba(57, 255, 122, 0.25);
+}
+
+.radar[hidden] { display: none; }
 
 /* ============================================================
    SHIP PICKER (title and game-over screens)
@@ -693,6 +710,12 @@ background: rgba(2, 3, 15, 0.92);
         right: calc(8 * var(--u));
         margin-top: 0;
     }
+}
+
+.radar {
+    width: calc(72 * var(--u));
+    height: calc(72 * var(--u));
+    margin-bottom: calc(5 * var(--u));
 }
 
 .weapon-switch {

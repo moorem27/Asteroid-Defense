@@ -141,6 +141,11 @@
         </div>
 
         <div class="hud-block hud-right">
+            <!-- Radar (online): blips for other pilots, no names or
+                 colors. game.js (RADAR) draws it. -->
+            <canvas id="radar" class="radar" width="200" height="200"
+                    aria-hidden="true" hidden></canvas>
+
             <div class="hud-label" id="sector-label">SECTOR</div>
             <div class="hud-value" id="sector">01</div>
         </div>
