@@ -221,8 +221,11 @@ export class Texture {
 export class CanvasTexture extends Texture {}
 
 export class TextureLoader {
-    load(url, onLoad) {
-        setTimeout(() => onLoad?.(new Texture()), 0);
+    // Files listed in globalThis.__missingTextures fail to load.
+    load(url, onLoad, onProgress, onError) {
+        const missing = (globalThis.__missingTextures ?? []).some((f) => String(url).endsWith(f));
+
+        setTimeout(() => (missing ? onError?.(new Error("404")) : onLoad?.(new Texture())), 0);
         return new Texture();
     }
 }

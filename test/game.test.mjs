@@ -18,8 +18,10 @@ const games = [];
 
 // Load a fresh copy of game.js (and multiplayer.js) wired to the
 // stand-ins and to `server`.
-async function loadGame(server, { start = true } = {}) {
+async function loadGame(server, { start = true, search = "", missingTextures = [] } = {}) {
     const dom = installDom(path.join(publicDir, "index.html"));
+    location.search = search;
+    globalThis.__missingTextures = missingTextures;
 
     globalThis.WebSocket = makeBrowserWebSocket(server);
 
@@ -54,7 +56,8 @@ export const __test = {
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     ufo, UFO, ufoState, ufoNow,
     ships, SHIP_DESIGNS, shipExplosions, smokePuffs, damageSmoke, cycleShip, updateHUD, damagePlayer,
-    cloak,
+    cloak, MAPS, parallaxMeshes, orbitLimb,
+    get mapName() { return mapName; },
     get multiplayer() { return multiplayer; }
 };
 `;
@@ -1272,6 +1275,46 @@ test("cloak: unlocks at 25,000; C or the button toggles it; the ship turns ghost
     assert.equal(ship.cloaked, false, "server knows");
 
     stopGames();
+});
+
+test("maps: ?map= chooses deep space or low orbit; orbit adds the atmosphere's edge; missing orbit images fall back to space", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const files = (t) => t.parallaxMeshes.map((m) => m.userData.layer.file);
+
+    const orbit = await loadGame(server, { search: "?map=orbit" });
+    await waitFor(() => orbit.t.parallaxMeshes.length === 3, 3000, "orbit layers");
+
+    assert.equal(orbit.t.mapName, "orbit");
+    assert.deepEqual(files(orbit.t).sort(), ["bg_orbit_clouds.png", "bg_orbit_ground.jpg", "bg_orbit_haze.png"]);
+    assert.equal(orbit.t.orbitLimb.visible, true, "the atmosphere's edge");
+    stopGames();
+
+    const space = await loadGame(server, { search: "?map=space" });
+    await waitFor(() => space.t.parallaxMeshes.length === 3, 3000, "space layers");
+
+    assert.equal(space.t.mapName, "space");
+    assert.deepEqual(files(space.t).sort(), ["bg_nebula.png", "bg_stars_far.png", "bg_stars_near.png"]);
+    assert.equal(space.t.orbitLimb.visible, false);
+    stopGames();
+
+    const fallback = await loadGame(server, { search: "?map=orbit", missingTextures: ["bg_orbit_ground.jpg"] });
+    await waitFor(() => fallback.t.parallaxMeshes.length === 3, 3000, "fallback layers");
+
+    assert.equal(fallback.t.mapName, "space", "fell back to deep space");
+    assert.ok(files(fallback.t).includes("bg_nebula.png"));
+    assert.equal(fallback.t.orbitLimb.visible, false);
+    stopGames();
+
+    // No choice in the address: one of the two, at random.
+    const seen = new Set();
+    for (let i = 0; i < 20 && seen.size < 2; i++) {
+        const g = await loadGame(server);
+        seen.add(g.t.mapName);
+        stopGames();
+    }
+    assert.deepEqual([...seen].sort(), ["orbit", "space"], "both maps come up");
 });
 
 test("mouse controls are unchanged: drag steers toward the cursor, click fires", async () => {
