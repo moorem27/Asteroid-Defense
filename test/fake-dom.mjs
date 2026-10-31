@@ -45,7 +45,14 @@ class FakeElement {
         }
     }
 
-    appendChild(child) { this.children.push(child); return child; }
+    appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
+    prepend(child) { this.children.unshift(child); child.parentNode = this; }
+
+    remove() {
+        const siblings = this.parentNode?.children;
+        if (siblings?.includes(this)) siblings.splice(siblings.indexOf(this), 1);
+        this.parentNode = null;
+    }
     focus() { this.focused = true; }
     blur() { this.focused = false; }
     select() {}

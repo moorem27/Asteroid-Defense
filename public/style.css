@@ -245,6 +245,34 @@ pointer-events: none;
 .leaderboard .lb-gap { justify-content: flex-end; color: var(--cyan); }
 
 /* ============================================================
+   GAME LOG (top left, under the score, online only)
+   Each line flashes in, stays a few seconds, then fades (game.js
+   removes it); the newest is on top.
+   ============================================================ */
+
+.game-log { margin: calc(8 * var(--u)) 0 0; padding: 0; list-style: none; max-width: 32ch; font-size: calc(8 * var(--u)); line-height: 1.8; text-align: left; }
+
+.game-log[hidden] { display: none; }
+
+.game-log li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: game-log-line 5s ease-out forwards; }
+
+.game-log .log-name { display: inline-block; max-width: 14ch; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+
+.game-log .log-weapon { color: var(--cyan); }
+
+@keyframes game-log-line {
+    0% { opacity: 0; text-shadow: 0 0 14px white; }
+    4% { opacity: 1; text-shadow: 0 0 14px white; }
+    20% { opacity: 1; text-shadow: 0 0 0 transparent; }
+    80% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .game-log li { animation: none; }
+}
+
+/* ============================================================
    WEAPON SWITCH (bottom left, under the hull display)
    Hidden until a second weapon unlocks; tap to cycle.
    ============================================================ */
@@ -731,6 +759,17 @@ background: rgba(2, 3, 15, 0.92);
         right: calc(8 * var(--u));
         margin-top: 0;
     }
+
+    /* Likewise the game log, on the left. */
+    #hud .game-log {
+        position: absolute;
+        top: 100%;
+        left: calc(8 * var(--u));
+        /* (Leaves the right side to the leaderboard.) */
+        max-width: 46vw;
+        margin-top: 0;
+        font-size: calc(7 * var(--u));
+    }
 }
 
 .radar {
@@ -767,6 +806,10 @@ background: rgba(2, 3, 15, 0.92);
 
 #hud .leaderboard {
     right: calc(5 * var(--u));
+}
+
+#hud .game-log {
+    left: calc(5 * var(--u));
 }
 
 .game-logo {

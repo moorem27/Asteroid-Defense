@@ -10067,6 +10067,69 @@ function netName(id) {
     return multiplayer ? multiplayer.nameOf(String(id)) : "A PILOT";
 }
 
+// ------------------------------------------------------------
+// GAME LOG (online)
+// Under the score: who destroyed whom, and with what. Each line
+// flashes up for a few seconds (style.css animates it), newest on top.
+// ------------------------------------------------------------
+
+const GAME_LOG = {
+    maxLines: 4,
+    showMs: 5000
+};
+
+const LOG_WEAPONS = { blaster: "BLASTER", laser: "LASER", rockets: "ROCKETS" };
+
+const LOG_CAUSES = {
+    rogue: "THE ROGUE ASTEROID",
+    ufo: "THE UFO",
+    asteroid: "AN ASTEROID",
+    mine: "A MINE"
+};
+
+// A pilot's name in their color ("YOU" for this pilot).
+function logName(id) {
+    const self = netSelf(id);
+    const name = self ? "YOU" : netName(id);
+    const color = self ? "#ffffff" : multiplayer?.colorOf(String(id)) ?? "#ffffff";
+
+    return `<span class="log-name" style="color:${escapeHtml(color)}">${escapeHtml(name)}</span>`;
+}
+
+function addGameLog(html) {
+    const list = $("game-log");
+    if (!list) return;
+
+    const line = document.createElement("li");
+    line.innerHTML = html;
+
+    list.prepend(line);
+    list.hidden = false;
+
+    while (list.children.length > GAME_LOG.maxLines) {
+        list.children[list.children.length - 1].remove();
+    }
+
+    setTimeout(() => {
+        line.remove();
+        if (list.children.length === 0) list.hidden = true;
+    }, GAME_LOG.showMs);
+}
+
+// A ship destroyed: "ALPHA DESTROYED BRAVO · LASER", or what got it.
+function logShipDestroyed(shipId, killerId, cause, weapon) {
+    const victim = logName(shipId);
+
+    if (killerId) {
+        const how = LOG_WEAPONS[weapon];
+        addGameLog(`${logName(killerId)} DESTROYED ${victim}` + (how ? ` <span class="log-weapon">· ${how}</span>` : ""));
+        return;
+    }
+
+    const what = LOG_CAUSES[cause];
+    addGameLog(what ? `${what} DESTROYED ${victim}` : `${victim} WAS DESTROYED`);
+}
+
 function getNetworkState() {
     return {
         playing: state.running && Boolean(player.mesh) && !net.dead,
@@ -10318,7 +10381,11 @@ function netShipDestroyed(killerId, cause = "") {
             ? "HIT BY THE ROGUE ASTEROID"
             : cause === "ufo"
                 ? "VAPORIZED BY THE UFO"
-                : "SHIP DESTROYED";
+                : cause === "asteroid"
+                    ? "HIT BY AN ASTEROID"
+                    : cause === "mine"
+                        ? "HIT A MINE"
+                        : "SHIP DESTROYED";
 
     updateHUD();
 }
@@ -10756,14 +10823,24 @@ function applyNetEvent(e, lag) {
         }
 
         case "sk": {
-            // [ship, killer, x, z, cause]
+            // [ship, killer, x, z, cause, weapon, points for the kill]
+            logShipDestroyed(e[1], e[2] || null, e[5] || "", e[6] || "");
+
             if (netSelf(e[1])) {
                 netShipDestroyed(e[2] || null, e[5] || "");
             } else {
                 createShipExplosion(point(e[3], e[4]), multiplayer?.designOf(e[1]) ?? 0);
 
                 if (netSelf(e[2])) {
-                    $("message").textContent = `${netName(e[1])} DESTROYED · +2,500`;
+                    // (Repeat kills of the same pilot are worth less, down
+                    // to nothing: the server says how much.)
+                    const points = Number(e[7]);
+
+                    $("message").textContent = !Number.isFinite(points)
+                        ? `${netName(e[1])} DESTROYED`
+                        : points > 0
+                            ? `${netName(e[1])} DESTROYED · +${points.toLocaleString("en-US")}`
+                            : `${netName(e[1])} DESTROYED · NO POINTS`;
                 }
             }
             break;

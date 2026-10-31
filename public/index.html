@@ -69,6 +69,10 @@
         <div class="hud-block">
             <div class="hud-label">SCORE</div>
             <div class="hud-value" id="score">000000</div>
+
+            <!-- Game log (online only): who destroyed whom, each line
+                 flashing up for a few seconds; game.js fills it. -->
+            <ol id="game-log" class="game-log" role="log" aria-label="Game log" hidden></ol>
         </div>
 
         <div class="hud-block hud-center">

@@ -676,6 +676,8 @@ test("bullets damage other pilots; a kill scores a bonus and the victim respawns
     const kill = b.eventsOf("sk").find((e) => e[1] === b.id);
     assert.ok(kill, "B destroyed");
     assert.equal(kill[2], a.id, "by ALPHA");
+    assert.equal(kill[6], "blaster", "with the blaster (for the game log)");
+    assert.equal(kill[7], 2500, "worth 2,500");
     assert.equal(b.you.alive, false);
     assert.equal(a.you.sc, 200 + 200 + 2500);
 
@@ -2293,6 +2295,48 @@ test("score farming: nothing off a pilot on your own address; repeat kills are w
     assert.equal(sd.kills, 3);
 
     assert.equal(kill(sc, sd), 2700, "someone else: full points");
+
+    shutdownAll();
+});
+
+test("game log: a kill says what weapon did it and what it was worth; other deaths say what got the ship", async () => {
+    const server = await loadWorker();
+    server.clientIp = "198.51.100.1";
+    const a = await rawClient(server, "ALPHA");
+    server.clientIp = "198.51.100.2";
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+    const [sa, sb] = [a, b].map((x) => shipOf(lobby, x));
+
+    const lastKill = async () => {
+        await waitFor(() => a.eventsOf("sk").length > seen, 1000, "kill event");
+        seen = a.eventsOf("sk").length;
+        return a.eventsOf("sk").at(-1);
+    };
+    let seen = 0;
+
+    const ready = (ship, hull = 1) => Object.assign(ship, { alive: true, hull, hitCooldownUntil: 0, shieldUntil: 0, warpUntil: 0 });
+
+    // Laser: full points.
+    ready(sb);
+    lobby.damageShip(sb, 1, sa, Date.now(), null, "laser");
+    let kill = await lastKill();
+    assert.deepEqual([kill[2], kill[6], kill[7]], [a.id, "laser", 2500]);
+
+    // Hit with rockets, then finished off by an asteroid: still ALPHA's
+    // kill, with rockets (the second kill of BRAVO: half points).
+    ready(sb, 2);
+    lobby.damageShip(sb, 1, sa, Date.now(), null, "rockets");
+    sb.hitCooldownUntil = 0;
+    lobby.damageShip(sb, 1, null, Date.now(), "asteroid");
+    kill = await lastKill();
+    assert.deepEqual([kill[2], kill[5], kill[6], kill[7]], [a.id, "asteroid", "rockets", 1250]);
+
+    // A mine with nobody to credit.
+    ready(sa);
+    lobby.damageShip(sa, 1, null, Date.now(), "mine");
+    kill = await lastKill();
+    assert.deepEqual([kill[1], kill[2], kill[5], kill[6], kill[7]], [a.id, "", "mine", "", 0]);
 
     shutdownAll();
 });

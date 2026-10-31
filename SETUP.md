@@ -48,7 +48,8 @@ can award themselves points.
 - **Warp bubble.** Every 10,000 points gives a warp bubble that makes you immune
   and clears rocks around you.
 - **Rounds.** Each round lasts 15 minutes. A live top 5 sits under the high
-  score. At 0:00 the black hole opens and carries everyone out, a results
+  score, and a game log under your score flashes up each ship destroyed (who
+  destroyed whom and with which weapon, or what got them). At 0:00 the black hole opens and carries everyone out, a results
   screen names the winner, and a new round starts about 20 seconds later.
 - **All-time leaderboard.** The server keeps the 10 best scores ever set in any
   lobby:

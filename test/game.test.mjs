@@ -59,7 +59,7 @@ export const __test = {
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     ufo, UFO, ufoState, ufoNow,
     ships, SHIP_DESIGNS, shipExplosions, smokePuffs, damageSmoke, cycleShip, updateHUD, damagePlayer,
-    cloak, MAPS, parallaxMeshes, orbitLimb, launchGame, endGame,
+    cloak, MAPS, parallaxMeshes, orbitLimb, launchGame, endGame, GAME_LOG,
     get mapName() { return mapName; },
     get multiplayer() { return multiplayer; }
 };
@@ -1437,6 +1437,58 @@ test("maps: nothing shows until the lobby's map is known, then only that one (no
     assert.ok(!globalThis.__textureLoads.some((u) => u.includes("bg_orbit")), "low orbit never loaded");
 
     globalThis.__textureLoads = null;
+    other.close();
+    stopGames();
+});
+
+test("game log: a kill flashes up under the score (who, whom, what weapon), then goes", async () => {
+    const game = await bootOnline();
+    const { t, dom, server } = game;
+    const lobby = server.lobbies()[0].instance;
+
+    t.GAME_LOG.showMs = 600;
+
+    // Another pilot, BRAVO.
+    const WS = makeBrowserWebSocket(server);
+    const other = new WS("ws://game.test/api/ws?v=2&name=BRAVO");
+    await waitFor(() => lobby.ships.size === 2 && t.multiplayer.roster.size === 1, 2000, "BRAVO joined");
+
+    const ships = [...lobby.ships.values()];
+    const bravo = ships.find((s) => s.name === "BRAVO");
+    const me = ships.find((s) => s !== bravo);
+
+    const log = dom.el("game-log");
+    assert.equal(log.hidden, true, "empty: hidden");
+
+    Object.assign(bravo, { hull: 1, shieldUntil: 0, hitCooldownUntil: 0 });
+    lobby.damageShip(bravo, 1, me, Date.now(), null, "laser");
+    await waitFor(async () => { await play(game, 30); return log.children.length === 1; }, 2000, "logged");
+
+    const text = log.children[0].innerHTML.replace(/<[^>]+>/g, "");
+    assert.equal(text, "YOU DESTROYED BRAVO · LASER");
+    assert.equal(log.hidden, false);
+    assert.match(dom.el("message").textContent, /BRAVO DESTROYED · \+2,500/);
+
+    // The other way round, and then what isn't a pilot.
+    Object.assign(me, { hull: 1, shieldUntil: 0, hitCooldownUntil: 0 });
+    lobby.damageShip(me, 1, bravo, Date.now(), null, "rockets");
+    await waitFor(async () => { await play(game, 30); return log.children.length === 2; }, 2000, "logged");
+    assert.equal(log.children[0].innerHTML.replace(/<[^>]+>/g, ""), "BRAVO DESTROYED YOU · ROCKETS", "newest on top");
+
+    // At most 4 lines.
+    for (let i = 0; i < 4; i++) {
+        Object.assign(bravo, { alive: true, hull: 1, shieldUntil: 0, hitCooldownUntil: 0 });
+        lobby.damageShip(bravo, 1, null, Date.now(), "mine");
+        await play(game, 40);
+    }
+
+    await waitFor(async () => { await play(game, 30); return log.children[0].innerHTML.includes("A MINE DESTROYED"); }, 2000, "mine logged");
+    assert.equal(log.children.length, 4, "only the latest 4");
+
+    // Then they go.
+    await waitFor(async () => { await play(game, 50); return log.children.length === 0; }, 3000, "faded out");
+    assert.equal(log.hidden, true);
+
     other.close();
     stopGames();
 });

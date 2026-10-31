@@ -2397,7 +2397,7 @@ export class Lobby extends DurableObject {
                     this.event(["uh", round2(hx), round2(hz), b.owner.id, 0]);
                     this.ufoAttacked(b.owner, now);
                 } else {
-                    this.damageShip(best.ref, BULLET.shipDamage, b.owner, now);
+                    this.damageShip(best.ref, BULLET.shipDamage, b.owner, now, null, "blaster");
                 }
 
                 continue;
@@ -2452,7 +2452,7 @@ export class Lobby extends DurableObject {
             if (s.cloaked) this.eventFor(s, ["lh", round2(p.x), round2(p.z)]);
             else this.event(["lh", round2(p.x), round2(p.z)]);
 
-            this.damageShip(s, LASER.shipDamage, beam.owner, now);
+            this.damageShip(s, LASER.shipDamage, beam.owner, now, null, "laser");
         }
     }
 
@@ -2567,7 +2567,7 @@ export class Lobby extends DurableObject {
             const p = this.shipPosition(s, now);
 
             if (dist(rocket, p) <= ROCKET.blastRadius + SHIP.radius) {
-                this.damageShip(s, ROCKET.shipDamage, by, now);
+                this.damageShip(s, ROCKET.shipDamage, by, now, null, "rockets");
             }
         }
     }
@@ -2726,8 +2726,9 @@ export class Lobby extends DurableObject {
     // cause: "rogue" for the rogue asteroid (it ignores the short
     // cooldown between hits, and players are told what got them).
     // cause "ufo": the UFO's plasma beam, which nothing stops and which
-    // no pilot gets credit for.
-    damageShip(ship, amount, attacker, now, cause = null) {
+    // no pilot gets credit for. "asteroid" and "mine": just for the
+    // game log. weapon: the attacker's ("blaster", "laser", "rockets").
+    damageShip(ship, amount, attacker, now, cause = null, weapon = null) {
         if (!ship.alive) return;
 
         // Teammates never hurt each other.
@@ -2742,6 +2743,7 @@ export class Lobby extends DurableObject {
         if (attacker && attacker !== ship) {
             ship.lastHitBy = attacker;
             ship.lastHitAt = now;
+            ship.lastHitWeapon = weapon;
 
             const worth = this.pvpWorth(attacker, ship);
             if (worth > 0) this.addScore(attacker, Math.round(POINTS.shipHit * worth));
@@ -2764,9 +2766,11 @@ export class Lobby extends DurableObject {
         // Destroyed. Whoever hit it last (within a few seconds) gets
         // the kill, even if it was finished off by an asteroid.
         let killer = attacker && attacker !== ship ? attacker : null;
+        let killWeapon = killer ? weapon : null;
 
         if (!killer && ship.lastHitBy && now - ship.lastHitAt < 5000 && cause !== "ufo") {
             killer = ship.lastHitBy;
+            killWeapon = ship.lastHitWeapon ?? null;
         }
 
         if (killer && ![...this.ships.values()].includes(killer)) killer = null;
@@ -2778,6 +2782,9 @@ export class Lobby extends DurableObject {
         ship.respawnAt = now + SHIP.respawnMs;
         ship.warpUntil = 0;
         ship.lastHitBy = null;
+        ship.lastHitWeapon = null;
+
+        let points = 0;
 
         if (killer) {
             const worth = this.pvpWorth(killer, ship);
@@ -2786,12 +2793,14 @@ export class Lobby extends DurableObject {
             this.killCounts.set(key, (this.killCounts.get(key) ?? 0) + 1);
 
             if (worth > 0) {
+                points = Math.round(POINTS.shipKill * worth);
                 killer.kills++;
-                this.addScore(killer, Math.round(POINTS.shipKill * worth));
+                this.addScore(killer, points);
             }
         }
 
-        this.event(["sk", ship.id, killer ? killer.id : "", round2(p.x), round2(p.z), cause ?? ""]);
+        // [ship, killer, x, z, cause, weapon, points for the kill]
+        this.event(["sk", ship.id, killer ? killer.id : "", round2(p.x), round2(p.z), cause ?? "", killWeapon ?? "", points]);
     }
 
     // Kills of `victim` by `attacker` this round are counted under this
@@ -2961,7 +2970,7 @@ export class Lobby extends DurableObject {
 
                 if (d >= SHIP.radius + a.radius) continue;
 
-                this.damageShip(ship, 1, null, now);
+                this.damageShip(ship, 1, null, now, "asteroid");
 
                 // Knock the asteroid away (as the solo game does).
                 if (d > 0.001) {
@@ -2988,7 +2997,7 @@ export class Lobby extends DurableObject {
                 if (Math.hypot(m.x - p.x, m.z - p.z) >= SHIP.radius + MINES.radius) continue;
 
                 this.destroyMine(m, null);
-                this.damageShip(ship, 1, null, now);
+                this.damageShip(ship, 1, null, now, "mine");
             }
 
             for (const c of [...this.crystals]) {
