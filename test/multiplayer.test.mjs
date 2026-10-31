@@ -708,24 +708,54 @@ test("laser and rockets hit other pilots too; the spawn shield protects", async 
 
     shipOf(lobby, a).score = 20000;
 
+    // BRAVO is just off the beam's centerline: a glancing hit (a dead
+    // center hit would destroy it outright; see the next test).
+
     // Shielded (just spawned): no damage.
-    await hold([[a, 0, 0], [b, 0, 20]], 150);
+    await hold([[a, 0, 0], [b, 0.6, 20]], 150);
     a.fire(1, 0, 1.1, 0);
-    await hold([[a, 0, 0], [b, 0, 20]], 200);
+    await hold([[a, 0, 0], [b, 0.6, 20]], 200);
     assert.equal(b.you.hull, 3, "shield held");
 
     unshield(lobby);
     shipOf(lobby, a).lastFire = [0, 0, 0];
 
     a.fire(1, 0, 1.1, 0);
-    await hold([[a, 0, 0], [b, 0, 20]], 300);
+    await hold([[a, 0, 0], [b, 0.6, 20]], 300);
     assert.equal(b.you.hull, 2, "laser hit");
 
     shipOf(lobby, b).hitCooldownUntil = 0;
     a.fire(2, 0, 1.1, 0);
-    await hold([[a, 0, 0], [b, 0, 20]], 2500);
+    await hold([[a, 0, 0], [b, 0.6, 20]], 2500);
 
     assert.ok(b.you.hull === 0 || b.you.alive === false, "rocket finished B (2 damage)");
+
+    shutdownAll();
+});
+
+test("laser: a dead-center hit destroys a ship in one shot, whatever its hull", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+
+    shipOf(lobby, a).score = 20000;
+
+    await hold([[a, 0, 0], [b, 0, 20]], 150);
+    unshield(lobby);
+    assert.equal(shipOf(lobby, b).hull, 3, "full hull");
+
+    // The beam runs straight through BRAVO's center.
+    a.fire(1, 0, 1.1, 0);
+    await hold([[a, 0, 0], [b, 0, 20]], 300);
+
+    assert.equal(shipOf(lobby, b).alive, false, "one shot, destroyed");
+    assert.ok(a.eventsOf("sh").some((e) => e[1] === b.id && e[2] === 0), "hull straight to zero");
+
+    const kill = a.eventsOf("sk").find((e) => e[1] === b.id);
+    assert.ok(kill, "kill announced");
+    assert.equal(kill[2], a.id, "ALPHA gets the kill");
+    assert.equal(kill[6], "laser", "by laser");
 
     shutdownAll();
 });
@@ -2249,7 +2279,8 @@ test("cloak: hits, laser sparks, crystal pickups and warp kills don't give a clo
     const report = async (ms) => {
         const end = Date.now() + ms;
         while (Date.now() < end) {
-            a.state(0, 20, 0, { ck: 1 });
+            // Just off B's beam centerline: a glancing hit.
+            a.state(0.6, 20, 0, { ck: 1 });
             b.state(0, 0);
             c.state(40, 40);
             await sleep(50);

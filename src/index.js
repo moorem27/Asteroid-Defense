@@ -237,7 +237,11 @@ const LASER = {
     halfWidth: 0.3,
     life: 0.16,
     asteroidDamage: 2,
-    shipDamage: 1
+    shipDamage: 1,
+    // A direct hit: the beam's centerline passes within this distance
+    // of a ship's center (i.e. the drawn beam covers the center point).
+    // That destroys the ship outright, whatever its hull.
+    directHitRadius: 0.3
 };
 
 const ROCKET = {
@@ -2477,13 +2481,20 @@ export class Lobby extends DurableObject {
             const p = this.seenPosition(s, now, beam.rewind);
             if (!touches(p.x, p.z, SHIP.radius)) continue;
 
+            // Dead center: the beam's centerline passes (almost) through
+            // the ship's center.
+            const direct = segmentHit(
+                beam.ox, beam.oz, beam.dx, beam.dz, range,
+                p.x, p.z, LASER.directHitRadius
+            ) >= 0;
+
             beam.hit.add(s);
 
             // (Where a cloaked ship was hit is for its pilot only.)
             if (s.cloaked) this.eventFor(s, ["lh", round2(p.x), round2(p.z)]);
             else this.event(["lh", round2(p.x), round2(p.z)]);
 
-            this.damageShip(s, LASER.shipDamage, beam.owner, now, null, "laser");
+            this.damageShip(s, direct ? s.hull : LASER.shipDamage, beam.owner, now, null, "laser");
         }
     }
 
