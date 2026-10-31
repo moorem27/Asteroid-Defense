@@ -183,19 +183,9 @@ const MAPS = {
 // testing), whatever the server picks.
 let mapForced = false;
 
-const LAST_MAP_KEY = "asteroidDefense.lastMap";
-
-function rememberMap(name) {
-    try {
-        localStorage.setItem(LAST_MAP_KEY, name);
-    } catch {
-        // Private browsing: no memory, so the next pick is random.
-    }
-}
-
-// Solo (and until the server says otherwise): low orbit the first time
-// (closer to Earth, before heading out into space), then never the
-// same map as last time in this browser.
+// The page always opens in low orbit (closer to Earth, before heading
+// out into space). After that the maps alternate: each new solo game
+// (see startGame), and online each new round (the server's choice).
 function pickMap() {
     try {
         const wanted = new URLSearchParams(location.search).get("map");
@@ -208,20 +198,11 @@ function pickMap() {
         // No address to read (tests).
     }
 
-    let last = null;
-
-    try {
-        last = localStorage.getItem(LAST_MAP_KEY);
-    } catch {
-        last = null;
-    }
-
-    const names = Object.keys(MAPS).filter((name) => name !== last);
-    const name = !MAPS[last] ? "orbit" : names[Math.floor(Math.random() * names.length)] ?? "space";
-
-    rememberMap(name);
-    return name;
+    return "orbit";
 }
+
+// Solo games started since the page opened.
+let soloGamesStarted = 0;
 
 let mapName = pickMap();
 let currentMap = MAPS[mapName];
@@ -362,8 +343,6 @@ function installMap(name, textures) {
 function switchMap(name) {
     if (!MAPS[name] || mapForced) return;
     if (name === loadingMap) return;
-
-    rememberMap(name);
 
     // Already showing it: just cancel any other map still loading.
     if (name === mapName && parallaxMeshes.length > 0) {
@@ -9646,6 +9625,12 @@ function startGame() {
 
     // In a lobby, between rounds: the next round starts by itself.
     if (net.active && net.round?.phase === "ended") return;
+
+    // Solo: every game after the first is on the other map.
+    if (!net.active) {
+        if (soloGamesStarted > 0) switchMap(mapName === "orbit" ? "space" : "orbit");
+        soloGamesStarted++;
+    }
 
     resetGame();
 

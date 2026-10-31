@@ -19,6 +19,8 @@ const games = [];
 // Load a fresh copy of game.js (and multiplayer.js) wired to the
 // stand-ins and to `server`.
 async function loadGame(server, { start = true, search = "", missingTextures = [], lastMap = null } = {}) {
+    // (lastMap: what an older version of the game remembered as this
+    // browser's last map; it no longer decides anything.)
     const dom = installDom(path.join(publicDir, "index.html"));
     location.search = search;
     globalThis.__missingTextures = missingTextures;
@@ -57,7 +59,7 @@ export const __test = {
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     ufo, UFO, ufoState, ufoNow,
     ships, SHIP_DESIGNS, shipExplosions, smokePuffs, damageSmoke, cycleShip, updateHUD, damagePlayer,
-    cloak, MAPS, parallaxMeshes, orbitLimb,
+    cloak, MAPS, parallaxMeshes, orbitLimb, startGame, endGame,
     get mapName() { return mapName; },
     get multiplayer() { return multiplayer; }
 };
@@ -1340,21 +1342,32 @@ test("maps: ?map= chooses deep space or low orbit; orbit adds the atmosphere's e
     assert.equal(fallback.t.orbitLimb.visible, false);
     stopGames();
 
-    // Solo, no choice in the address: low orbit the first time...
-    const first = await loadGame(server);
-    await waitFor(() => first.t.parallaxMeshes.length === 3, 3000, "layers");
-    assert.equal(first.t.mapName, "orbit", "first visit: low orbit");
-    stopGames();
-
-    // ...then never the same map as last time.
-    for (const [last, next] of [["space", "orbit"], ["orbit", "space"]]) {
-        const g = await loadGame(server, { lastMap: last });
+    // Solo, no choice in the address: the page always opens in low
+    // orbit (even if this browser showed it last time)...
+    for (const lastMap of [null, "orbit", "space"]) {
+        const g = await loadGame(server, { start: false, lastMap });
         await waitFor(() => g.t.parallaxMeshes.length === 3, 3000, "layers");
-
-        assert.equal(g.t.mapName, next, `after ${last}: ${next}`);
-        assert.equal(localStorage.getItem("asteroidDefense.lastMap"), next, "remembered");
+        assert.equal(g.t.mapName, "orbit", `opens in low orbit (last time: ${lastMap})`);
         stopGames();
     }
+
+    // ...and each new game switches map: orbit, space, orbit.
+    const solo = await loadGame(server);
+    const { t } = solo;
+    const seen = [];
+
+    for (let i = 0; i < 3; i++) {
+        if (i > 0) {
+            t.endGame();
+            t.startGame();
+        }
+
+        await waitFor(() => t.parallaxMeshes.length === 3 && (i === 0 || t.mapName !== seen.at(-1)), 3000, `game ${i + 1}'s map`);
+        seen.push(t.mapName);
+    }
+
+    assert.deepEqual(seen, ["orbit", "space", "orbit"]);
+    stopGames();
 });
 
 test("maps online: everyone gets the lobby's map, and each new round switches to a different one", async () => {

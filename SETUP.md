@@ -121,9 +121,11 @@ escape a fight.
 There are two maps. Online, a lobby's first round is always in low orbit
 (close to Earth), then the rounds alternate: deep space, low orbit, deep space,
 and so on, so it's never the same map twice in a row. Everyone in the lobby
-sees the same map; it switches when the next round starts. In a solo game the
-first game in a browser is in low orbit, then it alternates. Maps only change
-the scenery; the game plays the same.
+sees the same map; it switches when the next round starts. The page itself
+always opens in low orbit, and in solo play each new game switches map (low
+orbit, deep space, low orbit, …). Someone joining a lobby partway through a
+deep-space round plays that round in deep space. Maps only change the scenery;
+the game plays the same.
 
 - **Deep space:** the nebula and star layers.
 - **Low orbit:** looking straight down from orbit on a chain of tropical
