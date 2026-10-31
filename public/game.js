@@ -3377,6 +3377,10 @@ const warp = {
     remaining: 0,
     elapsed: 0,
 
+    // Seconds into collapsing, once a black hole has won (see THE
+    // BLACK HOLE AGAINST A WARP BUBBLE); 0 otherwise.
+    collapse: 0,
+
     // The next score milestone that activates the warp.
     nextMilestone: WARP_SCORE_INTERVAL,
 
@@ -8185,6 +8189,9 @@ function updateBlackHole(dt) {
         updateShipSpaghettification(dt);
     }
 
+    // A warp bubble is dragged in with the ship, and gives way.
+    updateWarpInBlackHole(dt);
+
     // Stop updating the ship if it has been consumed.
     if (!player.mesh) return;
 
@@ -8365,15 +8372,18 @@ function activateWarp() {
 }
 
 
-// End the warp effect.
-function deactivateWarp() {
+// End the warp effect. quiet: no status message (the black hole's
+// own messages stay up).
+function deactivateWarp(quiet = false) {
     warp.active = false;
     warp.remaining = 0;
     warp.elapsed = 0;
+    warp.collapse = 0;
 
     if (warp.group) {
         warp.group.visible = false;
         warp.group.scale.setScalar(1);
+        warp.group.rotation.set(0, 0, 0);
     }
 
     const warpStatus = $("warp-status");
@@ -8382,51 +8392,29 @@ function deactivateWarp() {
         warpStatus.style.display = "none";
     }
 
-    $("message").textContent = "WARP FIELD OFFLINE";
+    if (!quiet) $("message").textContent = "WARP FIELD OFFLINE";
 
     console.info("Warp bubble expired.");
 }
 
-// Update the bubble animation and its timer.
-function updateWarp(dt) {
-    if (!warp.group || !warp.active) return;
-
-    warp.elapsed += dt;
-    warp.remaining -= dt;
-
-    // Expire the warp before updating its visuals.
-    if (warp.remaining <= 0) {
-        deactivateWarp();
-        return;
-    }
-
-    // Keep the bubble centered on the player.
-    warp.group.position.set(
-        player.position.x,
-        0.3,
-        player.position.z
-    );
-
-    // Animate the arcs.
+// The bubble's layers turning, pulsing and glowing.
+function animateWarpLayers(dt) {
     if (warp.models.arcs) {
         warp.models.arcs.rotation.y += dt * 0.9;
         warp.models.arcs.rotation.x =
             Math.sin(warp.elapsed * 1.2) * 0.12;
     }
 
-    // Rotate the core.
     if (warp.models.core) {
         warp.models.core.rotation.y -= dt * 0.22;
     }
 
-    // Animate the shimmer.
     if (warp.models.shimmer) {
         warp.models.shimmer.rotation.y += dt * 0.4;
         warp.models.shimmer.rotation.z =
             Math.sin(warp.elapsed * 2.0) * 0.08;
     }
 
-    // Pulse the energy layers.
     if (warp.models.pulse) {
         const pulse =
             1 + Math.sin(warp.elapsed * 3.2) * 0.08;
@@ -8449,6 +8437,120 @@ function updateWarp(dt) {
         warp.models.glow.intensity =
             2.4 + Math.sin(warp.elapsed * 5.0) * 0.8;
     }
+}
+
+// ------------------------------------------------------------
+// THE BLACK HOLE AGAINST A WARP BUBBLE
+// A gravitational tug of war the black hole always wins: the bubble
+// stays around the ship as it's dragged in, straining harder the
+// closer it gets (stretched toward the hole, wobbling, flickering),
+// and collapses in a flash as the ship crosses the event horizon.
+// ------------------------------------------------------------
+
+const WARP_TUG = {
+    // The strain builds from this far from the hole down to the event
+    // horizon.
+    strainFrom: 12,
+
+    // At full strain: stretched this much toward the hole, squeezed
+    // this much across, and wobbling by this much.
+    stretch: 0.7,
+    squeeze: 0.3,
+    wobble: 0.08,
+
+    // The collapse at the horizon, in seconds.
+    collapseSec: 0.35
+};
+
+function updateWarpInBlackHole(dt) {
+    if (!warp.group || !warp.active) return;
+
+    // The ship is gone: so is its bubble.
+    if (!player.mesh) {
+        deactivateWarp(true);
+        return;
+    }
+
+    warp.elapsed += dt;
+
+    // The warp's own clock stops: the black hole decides how it ends.
+    animateWarpLayers(dt);
+
+    const dx = BLACK_HOLE_POSITION.x - player.position.x;
+    const dz = BLACK_HOLE_POSITION.z - player.position.z;
+    const distance = Math.hypot(dx, dz);
+    const horizon = BLACK_HOLE_CONFIG.eventHorizonRadius;
+
+    // Dragged in with the ship.
+    warp.group.position.set(player.position.x, 0.3, player.position.z);
+
+    // Across the horizon: it gives way.
+    if (distance <= horizon || player.blackHoleData?.stretching) {
+        if (!warp.collapse) triggerSwallowFlare(0.6);
+
+        warp.collapse = (warp.collapse ?? 0) + dt;
+
+        if (warp.collapse >= WARP_TUG.collapseSec) {
+            deactivateWarp(true);
+            return;
+        }
+    }
+
+    // 0 out at strainFrom, 1 at the horizon.
+    const strain = 1 - THREE.MathUtils.clamp(
+        (distance - horizon) / (WARP_TUG.strainFrom - horizon),
+        0,
+        1
+    );
+
+    // Collapsing: shrinks to nothing (eased), straining hardest.
+    const left = warp.collapse
+        ? 1 - THREE.MathUtils.smoothstep(warp.collapse, 0, WARP_TUG.collapseSec)
+        : 1;
+
+    const pull = warp.collapse ? 1 : strain;
+    const wobble = 1 + Math.sin(warp.elapsed * 28) * WARP_TUG.wobble * pull;
+
+    // Long axis (local z) pointed at the hole.
+    warp.group.rotation.set(0, Math.atan2(dx, dz), 0);
+
+    // (Still growing in if it had only just started.)
+    const grown = THREE.MathUtils.smoothstep(warp.elapsed, 0, 0.6);
+    const size = Math.min(1, grown) * left;
+
+    warp.group.scale.set(
+        size * (1 - WARP_TUG.squeeze * pull) * wobble,
+        size,
+        size * (1 + WARP_TUG.stretch * pull) / wobble
+    );
+
+    // The field flickering as it fails.
+    if (warp.models.glow) {
+        warp.models.glow.intensity *= 1 - pull * 0.7 * Math.random();
+    }
+}
+
+// Update the bubble animation and its timer.
+function updateWarp(dt) {
+    if (!warp.group || !warp.active) return;
+
+    warp.elapsed += dt;
+    warp.remaining -= dt;
+
+    // Expire the warp before updating its visuals.
+    if (warp.remaining <= 0) {
+        deactivateWarp();
+        return;
+    }
+
+    // Keep the bubble centered on the player.
+    warp.group.position.set(
+        player.position.x,
+        0.3,
+        player.position.z
+    );
+
+    animateWarpLayers(dt);
 
     // Animate the initial appearance.
     if (warp.elapsed < 0.6) {
@@ -9619,11 +9721,13 @@ function resetGame() {
     warp.active = false;
     warp.remaining = 0;
     warp.elapsed = 0;
+    warp.collapse = 0;
     warp.nextMilestone = WARP_SCORE_INTERVAL;
 
     if (warp.group) {
         warp.group.visible = false;
         warp.group.scale.setScalar(1);
+        warp.group.rotation.set(0, 0, 0);
     }
 
     const warpStatus = $("warp-status");

@@ -1025,6 +1025,50 @@ test("UFO (solo): the black hole sends it away", async () => {
     stopGames();
 });
 
+test("black hole vs. warp bubble: the bubble is dragged in with the ship, strains, and collapses at the horizon", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t, dom } = game;
+
+    await waitFor(() => t.state.running, 3000, "running");
+
+    t.activateWarp();
+    await play(game, 700);
+    assert.equal(t.warp.active, true);
+
+    // The match ends with the bubble up.
+    t.state.matchTime = 5 * 60;
+    await play(game, 50);
+    assert.ok(t.blackHole.active, "black hole");
+
+    const start = t.player.position.clone();
+    let stretched = false;
+    let followed = true;
+    let collapsedBeforeShip = false;
+
+    await playUntil(game, () => !t.warp.active, 8000, "the bubble gives way", () => {
+        if (!t.warp.active) return;
+
+        const g = t.warp.group;
+
+        if (Math.hypot(g.position.x - t.player.position.x, g.position.z - t.player.position.z) > 1e-6) followed = false;
+        if (g.scale.z > g.scale.x * 1.2) stretched = true;
+    });
+
+    collapsedBeforeShip = Boolean(t.player.mesh);
+
+    assert.ok(t.player.position.distanceTo(start) > 3, "the ship was pulled in");
+    assert.ok(followed, "the bubble stayed on the ship (not left behind)");
+    assert.ok(stretched, "it strained toward the hole");
+    assert.ok(collapsedBeforeShip, "it gave way before the ship was swallowed");
+    assert.equal(t.warp.group.visible, false, "gone");
+    assert.notEqual(dom.el("message").textContent, "WARP FIELD OFFLINE", "the black hole's messages stay up");
+
+    stopGames();
+});
+
 test("UFO (online): the server's visit is drawn, shots are absorbed, and it leaves at round end", async () => {
     const game = await bootOnline();
     const { t } = game;
