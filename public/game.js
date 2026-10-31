@@ -2210,7 +2210,11 @@ function createShipExplosion(position, designIndex = 0, own = false) {
     const color = SHIP_DESIGNS[designIndex]?.color ?? "#ffffff";
 
     // Sparks and the white flash.
-    createExplosion(new THREE.Vector3(x, 0.4, z), 2.4, 36);
+    // The glowing ring comes from the ship explosion model below when
+    // it is loaded; otherwise the blast ring stands in.
+    createExplosion(new THREE.Vector3(x, 0.4, z), 2.4, 36, {
+        ring: !assets.shipExplosionRing
+    });
 
     const near = Math.hypot(x - player.position.x, z - player.position.z);
     if (own || near < 22) state.screenShake = Math.max(state.screenShake, own ? 0.8 : 0.4);
@@ -4259,7 +4263,7 @@ function explodeRocket(index) {
 
     const center = rocket.position;
 
-    createExplosion(center, 1.8, 24);
+    createExplosion(center, 1.8, 24, { ring: false });
     createShockwave(center);
 
     state.screenShake = Math.max(state.screenShake, 0.2);
@@ -7808,6 +7812,8 @@ for (let i = particles.length - 1; i >= 0; i--) {
     particles.splice(i, 1);
 }
 
+clearShockwaveFx();
+
 
 }
 
@@ -9235,7 +9241,9 @@ function updatePickups(dt) {
 
 const particleGeometry = new THREE.TetrahedronGeometry(0.12, 0);
 
-function createExplosion(position, radius = 1, count = 12) {
+// `ring: false` skips the blast ring, for effects that bring their own
+// (rocket shockwave, ship explosion ring).
+function createExplosion(position, radius = 1, count = 12, { ring = true } = {}) {
     // The flash fades individually, so it needs its own material,
     // but the sphere geometry is shared.
     const flash = new THREE.Mesh(
@@ -9279,9 +9287,249 @@ function createExplosion(position, radius = 1, count = 12) {
             life: randomRange(0.25, 0.8)
         });
     }
+
+    if (radius >= EXPLOSION_FX.minRadius) {
+        if (ring) spawnShockwave(position, radius);
+        spawnGlowSparks(position, radius, count);
+    }
+}
+
+// ------------------------------------------------------------
+// SHOCKWAVE AND GLOWING SPARKS
+// A bright ring rushes out across the playfield, and glowing sparks
+// burst outward in every 3D direction. The camera is orthographic,
+// so depth is faked: each spark tracks a virtual height toward the
+// camera, and a perspective factor makes the sparks flying at the
+// screen grow bigger and spread wider, while those flying away
+// shrink. Small hit sparks (radius below minRadius) skip all this.
+// ------------------------------------------------------------
+
+const EXPLOSION_FX = {
+    minRadius: 0.5,
+    // Shockwave ring
+    ringLife: 0.5,
+    ringStart: 0.3,       // starting scale, times radius
+    ringEnd: 3.6,         // final scale, times radius
+    ringOpacity: 0.85,
+    ringColor: [1.0, 0.78, 0.45],
+    // Glowing sparks
+    sparksPerCount: 1.6,  // sparks per normal particle
+    minSparks: 10,
+    maxSparks: 56,
+    maxLiveSparks: 450,   // cap across all explosions
+    sparkLife: [0.55, 1.05],
+    sparkSpeed: [1.5, 4.5],   // launch speed, times sqrt(radius)
+    sparkAccel: [7, 14],      // outward acceleration, times sqrt(radius)
+    sparkDrag: 0.9,
+    sparkSize: [0.35, 0.7],   // times sqrt(radius)
+    // Perspective: virtual distance from the explosion to the "lens".
+    // A spark at height h toward the camera is scaled by
+    // focal / (focal - h); closer than nearLimit it is clamped.
+    focal: 9,
+    nearLimit: 1.4,
+    hot: [1.0, 0.95, 0.8],    // color at birth
+    cool: [1.0, 0.45, 0.12]   // color as it fades
+};
+
+const blastRings = [];
+const glowSparks = [];
+
+let shockwaveGeometry = null;
+let glowSparkTexture;
+
+function getGlowSparkTexture() {
+    if (glowSparkTexture !== undefined) return glowSparkTexture;
+
+    glowSparkTexture = null;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 64;
+    const ctx = canvas.getContext?.("2d");
+
+    if (ctx) {
+        const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        g.addColorStop(0, "rgba(255, 255, 255, 1)");
+        g.addColorStop(0.18, "rgba(255, 240, 200, 0.9)");
+        g.addColorStop(0.45, "rgba(255, 170, 80, 0.35)");
+        g.addColorStop(1, "rgba(255, 120, 40, 0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, 64, 64);
+        glowSparkTexture = new THREE.CanvasTexture(canvas);
+    }
+
+    return glowSparkTexture;
+}
+
+function spawnShockwave(position, radius) {
+    if (!shockwaveGeometry) {
+        shockwaveGeometry = new THREE.RingGeometry(0.8, 1, 64);
+        shockwaveGeometry.rotateX?.(-Math.PI / 2);
+    }
+
+    const mesh = new THREE.Mesh(
+        shockwaveGeometry,
+        new THREE.MeshBasicMaterial({
+            color: new THREE.Color(...EXPLOSION_FX.ringColor),
+            transparent: true,
+            opacity: EXPLOSION_FX.ringOpacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            toneMapped: false
+        })
+    );
+
+    mesh.position.set(position.x, 0.5, position.z);
+    mesh.scale.setScalar(EXPLOSION_FX.ringStart * radius);
+    mesh.renderOrder = 4;
+    scene.add(mesh);
+
+    blastRings.push({ mesh, age: 0, radius });
+}
+
+function spawnGlowSparks(position, radius, count) {
+    const fx = EXPLOSION_FX;
+    const room = fx.maxLiveSparks - glowSparks.length;
+    const n = Math.min(
+        room,
+        clamp(Math.round(count * fx.sparksPerCount), fx.minSparks, fx.maxSparks)
+    );
+
+    if (n <= 0) return;
+
+    const k = Math.sqrt(radius);
+    const map = getGlowSparkTexture();
+
+    for (let i = 0; i < n; i++) {
+        // Uniform random direction on a sphere; y points at the camera.
+        const y = randomRange(-1, 1);
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(1 - y * y);
+        const dir = new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r);
+
+        const material = new THREE.SpriteMaterial({
+            map,
+            color: new THREE.Color(...fx.hot),
+            transparent: true,
+            opacity: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false,
+            toneMapped: false
+        });
+
+        const sprite = new THREE.Sprite(material);
+        sprite.renderOrder = 6;
+        scene.add(sprite);
+
+        const life = randomRange(...fx.sparkLife);
+
+        glowSparks.push({
+            sprite,
+            origin: new THREE.Vector3(position.x, 0, position.z),
+            offset: new THREE.Vector3(),   // 3D offset; y = toward camera
+            dir,
+            speed: randomRange(...fx.sparkSpeed) * k,
+            accel: randomRange(...fx.sparkAccel) * k,
+            size: randomRange(...fx.sparkSize) * k,
+            age: 0,
+            life
+        });
+    }
+
+    placeGlowSparks();
+}
+
+// Projects each spark's 3D offset onto the top-down screen.
+function placeGlowSparks() {
+    const fx = EXPLOSION_FX;
+
+    for (const s of glowSparks) {
+        const h = Math.min(s.offset.y, fx.focal - fx.nearLimit);
+        const persp = fx.focal / (fx.focal - h);
+        const t = s.age / s.life;
+
+        s.sprite.position.set(
+            s.origin.x + s.offset.x * persp,
+            // Above the playfield; nearer sparks draw higher.
+            2 + Math.max(0, h),
+            s.origin.z + s.offset.z * persp
+        );
+
+        // Sparks swell briefly, then shrink as they burn out.
+        const swell = Math.min(1, t * 6) * (1 - t * 0.6);
+        s.sprite.scale.setScalar(s.size * persp * swell);
+    }
+}
+
+function updateShockwaveFx(dt) {
+    const fx = EXPLOSION_FX;
+
+    for (let i = blastRings.length - 1; i >= 0; i--) {
+        const w = blastRings[i];
+        w.age += dt;
+
+        const t = Math.min(1, w.age / fx.ringLife);
+        const eased = 1 - Math.pow(1 - t, 3);
+
+        w.mesh.scale.setScalar(
+            (fx.ringStart + (fx.ringEnd - fx.ringStart) * eased) * w.radius
+        );
+        w.mesh.material.opacity = fx.ringOpacity * (1 - t) * (1 - t);
+
+        if (t >= 1) {
+            scene.remove(w.mesh);
+            w.mesh.material.dispose();
+            blastRings.splice(i, 1);
+        }
+    }
+
+    for (let i = glowSparks.length - 1; i >= 0; i--) {
+        const s = glowSparks[i];
+        s.age += dt;
+
+        if (s.age >= s.life) {
+            scene.remove(s.sprite);
+            s.sprite.material.dispose();
+            glowSparks.splice(i, 1);
+            continue;
+        }
+
+        // Accelerate outward, with a little drag so it stays lively.
+        s.speed += s.accel * dt;
+        s.speed *= Math.max(0, 1 - fx.sparkDrag * dt);
+        s.offset.addScaledVector(s.dir, s.speed * dt);
+
+        const t = s.age / s.life;
+        const m = s.sprite.material;
+        m.opacity = 1 - t * t;
+        m.color.setRGB?.(
+            fx.hot[0] + (fx.cool[0] - fx.hot[0]) * t,
+            fx.hot[1] + (fx.cool[1] - fx.hot[1]) * t,
+            fx.hot[2] + (fx.cool[2] - fx.hot[2]) * t
+        );
+    }
+
+    placeGlowSparks();
+}
+
+function clearShockwaveFx() {
+    for (const w of blastRings) {
+        scene.remove(w.mesh);
+        w.mesh.material.dispose();
+    }
+
+    for (const s of glowSparks) {
+        scene.remove(s.sprite);
+        s.sprite.material.dispose();
+    }
+
+    blastRings.length = 0;
+    glowSparks.length = 0;
 }
 
 function updateEffects(dt) {
+    updateShockwaveFx(dt);
+
     for (let i = explosions.length - 1; i >= 0; i--) {
         const effect = explosions[i];
 
@@ -9660,6 +9908,7 @@ function clearGameObjects() {
     clearArrayObjects(pickups, ["mesh", "glow"]);
     clearArrayObjects(particles, ["mesh"]);
     clearArrayObjects(explosions, ["mesh"]);
+    clearShockwaveFx();
 
     net.asteroids.clear();
     net.mines.clear();
@@ -10896,7 +11145,7 @@ function applyNetEvent(e, lag) {
             // A rocket exploded: [id, x, z].
             const where = point(e[2], e[3]);
 
-            createExplosion(where, 1.8, 24);
+            createExplosion(where, 1.8, 24, { ring: false });
             createShockwave(where);
 
             if (Math.hypot(where.x - player.position.x, where.z - player.position.z) < 25) {
