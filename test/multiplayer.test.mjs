@@ -1141,20 +1141,25 @@ test("dropped and back: a pilot alone in a lobby returns to the same lobby, roun
     shutdownAll();
 });
 
-test("maps: each round's map differs from the last, is sent to everyone, and survives a restart", async () => {
+test("maps: low orbit first, then alternating every round; sent to everyone; survives a restart", async () => {
     const server = await loadWorker();
     const a = await rawClient(server, "ALPHA", { token: TOKEN });
     const entry = [...server.env.LOBBY.objects.values()][0];
     const lobby = entry.instance;
 
-    assert.ok(["space", "orbit"].includes(a.welcome.round.map), "in the welcome");
+    assert.equal(a.welcome.round.map, "orbit", "a new lobby starts in low orbit (in the welcome)");
 
     let previous = lobby.round.map;
+    const seen = [previous];
+
     for (let i = 0; i < 6; i++) {
         lobby.startRound(lobby.round.n + 1, Date.now());
         assert.notEqual(lobby.round.map, previous, "different every round");
         previous = lobby.round.map;
+        seen.push(previous);
     }
+
+    assert.deepEqual(seen, ["orbit", "space", "orbit", "space", "orbit", "space", "orbit"]);
 
     await waitFor(() => a.rounds.some((r) => r.map === previous), 1000, "announced");
 

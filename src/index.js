@@ -86,14 +86,15 @@ const LAG = {
 
 const ROUND_MS = 15 * 60 * 1000;
 
-// The scenery for each round (the maps in public/game.js). Every new
-// round gets a different one from the round before, and everyone in
-// the lobby sees the same one. Maps only change the background.
-const MAP_NAMES = ["space", "orbit"];
+// The scenery for each round (the maps in public/game.js), in order: a
+// lobby's first round is in low orbit, close to Earth, then deep space,
+// and so on, so it's never the same map twice running. Everyone in the
+// lobby sees the same one. Maps only change the background.
+const MAP_NAMES = ["orbit", "space"];
 
-function nextMap(previous) {
-    const choices = MAP_NAMES.filter((m) => m !== previous);
-    return choices[Math.floor(Math.random() * choices.length)] ?? MAP_NAMES[0];
+function mapForRound(n) {
+    const i = (Math.max(1, Math.floor(Number(n) || 1)) - 1) % MAP_NAMES.length;
+    return MAP_NAMES[i];
 }
 
 // Between rounds: long enough for the black hole finale and the
@@ -833,8 +834,7 @@ export class Lobby extends DurableObject {
         this.resetWorld();
         this.departed.clear();
 
-        const map = MAP_NAMES.includes(saved.round.map) ? saved.round.map : nextMap(null);
-        this.lastMap = map;
+        const map = MAP_NAMES.includes(saved.round.map) ? saved.round.map : mapForRound(saved.round.n);
 
         this.round = {
             n: saved.round.n,
@@ -1907,9 +1907,8 @@ export class Lobby extends DurableObject {
         this.resetWorld();
         this.departed.clear();
 
-        // Never the same map twice in a row.
-        const map = nextMap(this.round?.map ?? this.lastMap ?? null);
-        this.lastMap = map;
+        // Orbit first, then alternating (see MAP_NAMES).
+        const map = mapForRound(n);
 
         this.round = {
             n,
@@ -3417,4 +3416,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { addressGroup, PVP, MAP_NAMES, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };
+export const _internals = { addressGroup, PVP, MAP_NAMES, mapForRound, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };

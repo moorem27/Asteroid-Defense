@@ -193,8 +193,9 @@ function rememberMap(name) {
     }
 }
 
-// Solo (and until the server says otherwise): never the same map as
-// last time in this browser.
+// Solo (and until the server says otherwise): low orbit the first time
+// (closer to Earth, before heading out into space), then never the
+// same map as last time in this browser.
 function pickMap() {
     try {
         const wanted = new URLSearchParams(location.search).get("map");
@@ -216,7 +217,7 @@ function pickMap() {
     }
 
     const names = Object.keys(MAPS).filter((name) => name !== last);
-    const name = names[Math.floor(Math.random() * names.length)] ?? "space";
+    const name = !MAPS[last] ? "orbit" : names[Math.floor(Math.random() * names.length)] ?? "space";
 
     rememberMap(name);
     return name;

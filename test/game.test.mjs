@@ -1340,7 +1340,13 @@ test("maps: ?map= chooses deep space or low orbit; orbit adds the atmosphere's e
     assert.equal(fallback.t.orbitLimb.visible, false);
     stopGames();
 
-    // Solo, no choice in the address: never the same map as last time.
+    // Solo, no choice in the address: low orbit the first time...
+    const first = await loadGame(server);
+    await waitFor(() => first.t.parallaxMeshes.length === 3, 3000, "layers");
+    assert.equal(first.t.mapName, "orbit", "first visit: low orbit");
+    stopGames();
+
+    // ...then never the same map as last time.
     for (const [last, next] of [["space", "orbit"], ["orbit", "space"]]) {
         const g = await loadGame(server, { lastMap: last });
         await waitFor(() => g.t.parallaxMeshes.length === 3, 3000, "layers");
