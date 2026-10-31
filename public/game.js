@@ -473,26 +473,29 @@ const ORBIT_LIMB_VERTEX_SHADER = /* glsl */ `
     }
 `;
 
-const ORBIT_LIMB_FRAGMENT_SHADER = /* glsl */ `
-    uniform vec2 uSize;
-    uniform vec2 uShift;
-    uniform float uTime;
+// The planet's edge as a function, shared with the lenses that redraw
+// the background (the warp bubble, the black hole), so they show it
+// too, bent: inside a bubble past the edge there's space, not clouds.
+// screenP: world units from the screen's center, y up the screen.
+// Returns the color, and how much it covers what's beneath.
+const ORBIT_LIMB_GLSL = /* glsl */ `
+    uniform float uLimbOn;
+    uniform vec2 uLimbSize;
+    uniform vec2 uLimbShift;
+    uniform float uLimbTime;
 
-    varying vec2 vUv;
-
-    float hash(vec2 p) {
+    float limbHash(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
     }
 
-    void main() {
+    vec4 orbitLimb(vec2 screenP) {
         // World units from the planet's center (y up the screen): the
         // screen's center, moved away when near the playfield's edge.
-        vec2 screenP = (vUv - 0.5) * uSize;
-        vec2 p = screenP + uShift;
+        vec2 p = screenP + uLimbShift;
         float r = length(p);
 
         // The planet's edge sits just inside the screen's corners.
-        float R = 0.5 * length(uSize) * 0.9;
+        float R = 0.5 * length(uLimbSize) * 0.9;
 
         // Haze thickening toward the edge.
         float haze = smoothstep(R * 0.62, R, r);
@@ -507,10 +510,10 @@ const ORBIT_LIMB_FRAGMENT_SHADER = /* glsl */ `
         // drawn as a tiny soft point (about a pixel or two).
         vec2 grid = screenP / 1.5;
         vec2 cell = floor(grid);
-        vec2 spot = vec2(hash(cell + 1.3), hash(cell + 9.1));
+        vec2 spot = vec2(limbHash(cell + 1.3), limbHash(cell + 9.1));
         float d = length((fract(grid) - spot) * 1.5);
-        float star = step(0.82, hash(cell)) * (1.0 - smoothstep(0.02, 0.07, d)) * (0.35 + 0.4 * hash(cell + 3.0));
-        float twinkle = 0.75 + 0.25 * sin(uTime * 2.0 + hash(cell + 7.0) * 20.0);
+        float star = step(0.82, limbHash(cell)) * (1.0 - smoothstep(0.02, 0.07, d)) * (0.35 + 0.4 * limbHash(cell + 3.0));
+        float twinkle = 0.75 + 0.25 * sin(uLimbTime * 2.0 + limbHash(cell + 7.0) * 20.0);
         vec3 spaceColor = vec3(0.01, 0.015, 0.04) + vec3(0.85, 0.9, 1.0) * star * twinkle * smoothstep(R * 1.04, R * 1.1, r);
 
         color = mix(color, spaceColor, space);
@@ -524,11 +527,39 @@ const ORBIT_LIMB_FRAGMENT_SHADER = /* glsl */ `
         color += vec3(0.55, 0.85, 1.0) * band * 1.2 + vec3(0.15, 0.35, 0.9) * glow * 0.6;
         alpha = max(alpha, band);
 
-        gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+        return vec4(color, clamp(alpha, 0.0, 1.0));
+    }
+
+    // The planet's edge over a background color at world point p (xz),
+    // when the orbit map is showing (uCamera: the camera's xz).
+    vec3 withOrbitLimb(vec3 color, vec2 p, vec2 camera) {
+        if (uLimbOn < 0.5) return color;
+
+        vec4 limb = orbitLimb(vec2(p.x - camera.x, camera.y - p.y));
+        return mix(color, limb.rgb, limb.a);
+    }
+`;
+
+const ORBIT_LIMB_FRAGMENT_SHADER = /* glsl */ `
+    ${ORBIT_LIMB_GLSL}
+
+    varying vec2 vUv;
+
+    void main() {
+        gl_FragColor = orbitLimb((vUv - 0.5) * uLimbSize);
 
         #include <colorspace_fragment>
     }
 `;
+
+// Uniforms for ORBIT_LIMB_GLSL, shared (the same objects) by the
+// planet's edge and every lens. updateOrbitLimb sets them.
+const limbUniforms = {
+    uLimbOn: { value: 0 },
+    uLimbSize: { value: new THREE.Vector2(50, 32) },
+    uLimbShift: { value: new THREE.Vector2(0, 0) },
+    uLimbTime: { value: 0 }
+};
 
 const orbitLimb = new THREE.Mesh(
     parallaxGeometry,
@@ -538,11 +569,7 @@ const orbitLimb = new THREE.Mesh(
         transparent: true,
         depthWrite: false,
         toneMapped: false,
-        uniforms: {
-            uSize: { value: new THREE.Vector2(50, 32) },
-            uShift: { value: new THREE.Vector2(0, 0) },
-            uTime: { value: 0 }
-        }
+        uniforms: { ...limbUniforms }
     })
 );
 
@@ -555,6 +582,9 @@ orbitLimb.visible = mapDecided && currentMap.limb;
 scene.add(orbitLimb);
 
 function updateOrbitLimb() {
+    // (The lenses draw the edge too, while it's showing.)
+    limbUniforms.uLimbOn.value = orbitLimb.visible ? 1 : 0;
+
     if (!orbitLimb.visible) return;
 
     const width = (camera.right - camera.left) * 1.1;
@@ -563,8 +593,8 @@ function updateOrbitLimb() {
     orbitLimb.position.set(cameraRig.x, -3.5, cameraRig.z);
     orbitLimb.scale.set(width, 1, height);
 
-    orbitLimb.material.uniforms.uSize.value.set(width, height);
-    orbitLimb.material.uniforms.uTime.value = performance.now() / 1000;
+    limbUniforms.uLimbSize.value.set(width, height);
+    limbUniforms.uLimbTime.value = performance.now() / 1000;
 
     // How close the view is to the playfield's edge (-1 to 1 each
     // way; screen up is world -z). Past halfway there, the planet's
@@ -578,7 +608,7 @@ function updateOrbitLimb() {
         return Math.sign(k) * t * t * (3 - 2 * t);
     };
 
-    orbitLimb.material.uniforms.uShift.value.set(
+    limbUniforms.uLimbShift.value.set(
         ease(nearX) * width * 0.25,
         ease(nearY) * height * 0.25
     );
@@ -5250,6 +5280,8 @@ const LENS_FRAGMENT_SHADER = /* glsl */ `
     uniform float uShadow;
     uniform float uStrength;
 
+    ${ORBIT_LIMB_GLSL}
+
     varying vec2 vWorld;
 
     // Same mapping updateParallax() uses: world point -> layer UV.
@@ -5280,6 +5312,8 @@ const LENS_FRAGMENT_SHADER = /* glsl */ `
 
         vec4 near = texture2D(uNear, layerUV(source, uFactor.z, uTile.z));
         color = mix(color, near.rgb, near.a * uOpacity.z);
+
+        color = withOrbitLimb(color, source, uCamera);
 
         // Fade into the normal background at the edge of the disc.
         float alpha = (1.0 - smoothstep(uRadius * 0.7, uRadius, r)) * uStrength;
@@ -5325,7 +5359,8 @@ function createLens() {
             uEinstein: { value: BLACK_HOLE_CONFIG.lensEinsteinRadius },
             uRadius: { value: BLACK_HOLE_CONFIG.lensRadius },
             uShadow: { value: 1.6 },
-            uStrength: { value: 0 }
+            uStrength: { value: 0 },
+            ...limbUniforms
         }
     });
 
@@ -5442,6 +5477,8 @@ const WARP_LENS_FRAGMENT_SHADER = /* glsl */ `
     uniform float uFlow;
     uniform float uRimGlow;
 
+    ${ORBIT_LIMB_GLSL}
+
     varying vec2 vWorld;
 
     // Same mapping updateParallax() uses: world point -> layer UV.
@@ -5452,7 +5489,8 @@ const WARP_LENS_FRAGMENT_SHADER = /* glsl */ `
         ) / tile;
     }
 
-    // The three background layers, composited as on screen.
+    // The three background layers, composited as on screen (with the
+    // planet's edge over them on the orbit map).
     vec3 background(vec2 p) {
         vec3 color = texture2D(uNebula, layerUV(p, uFactor.x, uTile.x)).rgb;
 
@@ -5462,7 +5500,7 @@ const WARP_LENS_FRAGMENT_SHADER = /* glsl */ `
         vec4 near = texture2D(uNear, layerUV(p, uFactor.z, uTile.z));
         color = mix(color, near.rgb, near.a * uOpacity.z);
 
-        return color;
+        return withOrbitLimb(color, p, uCamera);
     }
 
     // Where the light seen at this point came from, as an offset from
@@ -5566,7 +5604,8 @@ function createWarpLens() {
             uRipple: { value: c.rippleAmount },
             uRippleSpeed: { value: c.rippleSpeed },
             uFlow: { value: c.flow },
-            uRimGlow: { value: c.rimGlow }
+            uRimGlow: { value: c.rimGlow },
+            ...limbUniforms
         }
     });
 

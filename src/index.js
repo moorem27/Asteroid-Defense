@@ -66,6 +66,12 @@ const SIM_MS = 1000 / 30;
 const SNAPSHOT_EVERY = 1;
 const WORLD_SYNC_EVERY = Math.round(1000 / SIM_MS);
 
+// The leaderboard (everyone's score, kills and deaths) goes out as soon
+// as it changes, but at most this often, so a kill shows beside the
+// pilot's name straight away without sending it every step while rocks
+// are being shot.
+const STANDINGS_MIN_MS = 100;
+
 // New asteroids and mines are considered twice a second.
 const SPAWN_CHECK_EVERY = Math.round(500 / SIM_MS);
 
@@ -747,6 +753,10 @@ export class Lobby extends DurableObject {
         this.lastStepAt = 0;
         this.stepCount = 0;
         this.lastStaleCheck = 0;
+
+        // The leaderboard as last sent, and when (see STANDINGS_MIN_MS).
+        this.lastStandings = "";
+        this.lastStandingsAt = 0;
 
         // The score needed to reach the all-time top 10, as last heard
         // from the Matchmaker. Players who leave below it aren't
@@ -1672,6 +1682,8 @@ export class Lobby extends DurableObject {
             if (this.stepCount % SNAPSHOT_EVERY === 0) {
                 this.broadcastRaw(JSON.stringify(this.snapshotMessage(now)));
             }
+
+            this.sendStandings(now);
 
             if (this.stepCount % WORLD_SYNC_EVERY === 0 && this.round?.phase === "playing") {
                 this.broadcastRaw(JSON.stringify(this.worldMessage(now)));
@@ -3152,6 +3164,23 @@ export class Lobby extends DurableObject {
         return { t: "snap", now, p: players, rk: rockets };
     }
 
+    // Everyone's [id, score, kills, deaths], best first.
+    standingsRows() {
+        return this.standings().map((s) => [s.id, s.score, s.kills, s.deaths]);
+    }
+
+    // The leaderboard, if it changed since it was last sent.
+    sendStandings(now) {
+        if (now - this.lastStandingsAt < STANDINGS_MIN_MS) return;
+
+        const lb = JSON.stringify(this.standingsRows());
+        if (lb === this.lastStandings) return;
+
+        this.lastStandings = lb;
+        this.lastStandingsAt = now;
+        this.broadcastRaw(`{"t":"lb","now":${now},"lb":${lb}}`);
+    }
+
     worldMessage(now) {
         return {
             t: "world",
@@ -3159,7 +3188,7 @@ export class Lobby extends DurableObject {
             a: this.asteroids.map(asteroidArray),
             m: this.mines.map(mineArray),
             c: this.crystals.map(crystalArray),
-            lb: this.standings().map((s) => [s.id, s.score, s.kills, s.deaths]),
+            lb: this.standingsRows(),
             u: this.ufo
         };
     }
@@ -3366,9 +3395,16 @@ function finite(value, min, max) {
 }
 
 // An IP address, or for IPv6 its /64 (one household's network: each
-// device there can have its own address), or null.
+// device there can have its own address), or null. Also null for this
+// computer's own address (wrangler dev), so pilots tested side by side
+// on one machine count as different players; real connections through
+// Cloudflare never come from there.
 function addressGroup(ip) {
     if (typeof ip !== "string" || ip === "") return null;
+
+    const lower = ip.toLowerCase();
+    if (/^(::ffff:)?127\./.test(lower) || lower === "::1") return null;
+
     if (!ip.includes(":")) return ip;
 
     const [head, tail] = ip.toLowerCase().split("::");

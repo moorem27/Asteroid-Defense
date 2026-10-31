@@ -739,6 +739,32 @@ test("warp lens: bends the background while the warp is on, follows the ship, th
     stopGames();
 });
 
+test("warp lens: on the orbit map it draws the planet's edge too (space past it, not clouds); not in deep space", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    for (const [map, on] of [["orbit", 1], ["space", 0]]) {
+        const game = await loadGame(server, { search: `?map=${map}` });
+        const { t } = game;
+
+        await waitFor(() => t.state.running && t.parallaxMeshes.length === 3, 3000, "running");
+
+        t.activateWarp();
+        await play(game, 300);
+
+        const u = t.warpLens.mesh.material.uniforms;
+
+        assert.ok(t.warpLens.mesh.material.fragmentShader.includes("withOrbitLimb"), "the edge is part of the bend");
+        assert.equal(u.uLimbOn.value, on, `edge ${on ? "on" : "off"} in ${map}`);
+
+        // The same settings as the edge on screen (one set, shared).
+        assert.equal(u.uLimbSize, t.orbitLimb.material.uniforms.uLimbSize);
+        assert.equal(u.uLimbShift, t.orbitLimb.material.uniforms.uLimbShift);
+
+        stopGames();
+    }
+});
+
 test("reverse jets: fire when slowing down, as strongly as the ship is slowing; reverse unchanged", async () => {
     const server = await loadWorker();
     server.down = true;

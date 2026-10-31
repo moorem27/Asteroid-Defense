@@ -582,13 +582,14 @@ export class Multiplayer {
                 break;
 
             case "world":
-                if (Array.isArray(data.lb)) {
-                    this.standings = data.lb;
-                    this.updateRanks();
-                    this.renderLeaderboard();
-                }
+                if (Array.isArray(data.lb)) this.setStandings(data.lb);
 
                 this.call("world", data);
+                break;
+
+            case "lb":
+                // The leaderboard, sent as soon as a score changes.
+                if (Array.isArray(data.lb)) this.setStandings(data.lb);
                 break;
 
             case "ev":
@@ -596,6 +597,10 @@ export class Multiplayer {
                 break;
 
             case "you":
+                // Our own score, the moment it changes: our row on the
+                // leaderboard always matches the HUD.
+                if (Number.isFinite(data.sc)) this.setOwnScore(data.sc);
+
                 this.call("you", data);
                 break;
 
@@ -1555,6 +1560,30 @@ export class Multiplayer {
             this.refreshLabel(remote);
         }
 
+        this.renderLeaderboard();
+    }
+
+    // The leaderboard from the server: [id, score, kills, deaths], best
+    // first.
+    setStandings(lb) {
+        this.standings = lb;
+        this.updateRanks();
+        this.renderLeaderboard();
+    }
+
+    // Our own row's score, ahead of the next leaderboard (re-sorted as
+    // the server sorts: score, then kills, then fewer deaths).
+    setOwnScore(score) {
+        const row = this.standings.find((s) => String(s[0]) === this.selfId);
+        if (!row || row[1] === score) return;
+
+        row[1] = score;
+
+        this.standings = [...this.standings].sort(
+            (a, b) => num(b[1]) - num(a[1]) || num(b[2]) - num(a[2]) || num(a[3]) - num(b[3])
+        );
+
+        this.updateRanks();
         this.renderLeaderboard();
     }
 

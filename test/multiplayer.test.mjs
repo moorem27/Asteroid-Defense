@@ -1772,6 +1772,41 @@ test("silent connections are dropped; stale lobbies forgotten", async () => {
 
 // ---- The client module -----------------------------------------------
 
+test("client: a kill shows beside the pilot's name on everyone's leaderboard straight away", async () => {
+    const server = await loadWorker();
+    const a = makeClient(server, "ALPHA");
+    const b = makeClient(server, "BRAVO");
+    const c = makeClient(server, "CHARLIE");
+
+    await waitFor(() => a.isOnline() && b.isOnline() && c.isOnline(), 2000, "online");
+
+    const lobby = quietLobby(server);
+    const frames = (ms) => runFrames([[a, local(a, 0, 0)], [b, local(b, 0, 6)], [c, local(c, 40, 40)]], ms);
+
+    await frames(300);
+
+    const shipA = shipOf(lobby, { id: a.selfId });
+    const shipB = shipOf(lobby, { id: b.selfId });
+
+    // Just after a full resync, so only the immediate update can show it.
+    await waitFor(() => lobby.stepCount % 30 === 1, 2000, "just after a resync");
+
+    Object.assign(shipB, { hull: 1, shieldUntil: 0, hitCooldownUntil: 0 });
+    lobby.damageShip(shipB, 1, shipA, Date.now());
+
+    await frames(300);
+
+    for (const mp of [a, b, c]) {
+        const row = mp.standings.find((s) => String(s[0]) === a.selfId);
+        assert.deepEqual(row.slice(1, 3), [2700, 1], "score and kill in the standings");
+        assert.match(mp.leaderboard.innerHTML, /2,700/, "shown on the board");
+    }
+
+    assert.ok(a.leaderboard.innerHTML.indexOf("YOU") < a.leaderboard.innerHTML.indexOf("BRAVO"), "and top of it");
+
+    shutdownAll();
+});
+
 test("client: joins, forwards world/events/you/round, draws rockets, renders the leaderboard", async () => {
     const server = await loadWorker();
 
@@ -2258,6 +2293,24 @@ test("score farming: nothing off a pilot on your own address; repeat kills are w
     assert.equal(sd.kills, 3);
 
     assert.equal(kill(sc, sd), 2700, "someone else: full points");
+
+    shutdownAll();
+});
+
+test("score farming: pilots tested side by side on this computer (wrangler dev) still score off each other", async () => {
+    const server = await loadWorker();
+
+    server.clientIp = "127.0.0.1";
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+    const [sa, sb] = [a, b].map((x) => shipOf(lobby, x));
+
+    Object.assign(sb, { hull: 1, hitCooldownUntil: 0, shieldUntil: 0 });
+    lobby.damageShip(sb, 1, sa, Date.now());
+
+    assert.equal(sa.score, 2700);
+    assert.equal(sa.kills, 1);
 
     shutdownAll();
 });
