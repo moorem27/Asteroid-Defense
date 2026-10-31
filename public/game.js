@@ -10127,7 +10127,9 @@ function logShipDestroyed(shipId, killerId, cause, weapon) {
     }
 
     const what = LOG_CAUSES[cause];
-    addGameLog(what ? `${what} DESTROYED ${victim}` : `${victim} WAS DESTROYED`);
+    const was = netSelf(shipId) ? "WERE" : "WAS";
+
+    addGameLog(what ? `${what} DESTROYED ${victim}` : `${victim} ${was} DESTROYED`);
 }
 
 function getNetworkState() {
