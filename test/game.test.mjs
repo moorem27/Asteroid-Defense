@@ -406,6 +406,15 @@ test("round end: black hole finale, results screen, then a fresh round", async (
     assert.match(dom.el("results-list").innerHTML, /1,500/);
     assert.equal(dom.el("match-label").textContent, "NEXT ROUND");
 
+    // The countdown to the next round keeps ticking (it used to stick
+    // at the second the results appeared).
+    const seconds = (text) => Number(text.split(":")[1]);
+    const countdown = dom.el("results-countdown");
+    const before = seconds(countdown.textContent);
+
+    await play(game, 1100);
+    assert.ok(seconds(countdown.textContent) < before, `counts down from ${before}`);
+
     // Enter between rounds does nothing.
     dom.key("keydown", "Enter");
     assert.equal(t.state.running, false);

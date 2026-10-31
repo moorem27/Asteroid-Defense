@@ -10103,6 +10103,10 @@ function render() {
     // stop the frame.)
     multiplayer?.update(dt, getNetworkState());
 
+    // The round clock and the results countdown keep ticking between
+    // rounds, when updateGame (which normally updates them) is idle.
+    if (!state.running) updateRoundHUD();
+
     // The radar (online): where the other pilots are.
     updateRadar(dt);
 
