@@ -1476,8 +1476,15 @@ export class Lobby extends DurableObject {
         // While dead, the ship stays where it was destroyed.
         if (!ship.alive) return;
 
-        // The cloak: only once it's unlocked.
-        ship.cloaked = Number(data.ck) === 1 && cloakUnlocked(ship.score);
+        // The cloak: only once it's unlocked. Turning it on or off is
+        // announced (for the game log; it says who, never where).
+        // Death and a new round end it without a word.
+        const cloaked = Number(data.ck) === 1 && cloakUnlocked(ship.score);
+
+        if (cloaked !== ship.cloaked) {
+            ship.cloaked = cloaked;
+            this.event(["ck", ship.id, cloaked ? 1 : 0]);
+        }
 
         // No faster than a ship can fly (see MOVE).
         let nx = x;

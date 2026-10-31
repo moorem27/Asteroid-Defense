@@ -10236,6 +10236,11 @@ function logShipDestroyed(shipId, killerId, cause, weapon) {
     addGameLog(what ? `${what} DESTROYED ${victim}` : `${victim} ${was} DESTROYED`);
 }
 
+// A pilot turned their cloak on or off: "BRAVO CLOAKED".
+function logShipCloak(shipId, cloaked) {
+    addGameLog(`${logName(shipId)} ${cloaked ? "CLOAKED" : "UNCLOAKED"}`);
+}
+
 function getNetworkState() {
     return {
         playing: state.running && Boolean(player.mesh) && !net.dead,
@@ -10949,6 +10954,11 @@ function applyNetEvent(e, lag) {
             }
             break;
         }
+
+        case "ck":
+            // [ship, 1 cloaked / 0 uncloaked]
+            logShipCloak(e[1], Number(e[2]) === 1);
+            break;
 
         case "sr":
             // [ship, x, z]: back in the fight.

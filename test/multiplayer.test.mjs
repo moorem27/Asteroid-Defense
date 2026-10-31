@@ -2077,10 +2077,15 @@ test("cloak: only from 25,000; a cloaked ship is hidden from others, can't fire,
 
     const shipA = shipOf(lobby, a);
     assert.equal(shipA.cloaked, false, "locked below 25,000");
+    assert.equal(b.eventsOf("ck").length, 0, "nothing announced while locked");
 
     shipA.score = 26000;
     await report(1, 300);
     assert.equal(shipA.cloaked, true, "cloaked");
+
+    // Announced once (for the game log): who, never where.
+    await waitFor(() => b.eventsOf("ck").length > 0, 2000, "cloak event");
+    assert.deepEqual(b.eventsOf("ck"), [["ck", a.id, 1]], "once, though reported many times");
 
     const row = lobby.snapshotMessage(Date.now()).p.find((p) => p[0] === a.id);
     assert.deepEqual(row.slice(1, 8), [0, 0, 0, 0, 0, 0, 8], "no position, not visible, flag 8");
@@ -2102,9 +2107,12 @@ test("cloak: only from 25,000; a cloaked ship is hidden from others, can't fire,
     assert.equal(hit[4], null, "no position");
     assert.equal(hit[5], null, "no position");
 
-    // Uncloaked: back in view, and can fire.
+    // Uncloaked: announced, back in view, and can fire.
     await report(0, 200);
     assert.equal(shipA.cloaked, false);
+
+    await waitFor(() => b.eventsOf("ck").length > 1, 2000, "uncloak event");
+    assert.deepEqual(b.eventsOf("ck").at(-1), ["ck", a.id, 0]);
 
     const back = lobby.snapshotMessage(Date.now()).p.find((p) => p[0] === a.id);
     assert.equal(back[7] & 1, 1, "visible again");
@@ -2119,8 +2127,13 @@ test("cloak: only from 25,000; a cloaked ship is hidden from others, can't fire,
     assert.equal(shipA.cloaked, true);
 
     shipA.hitCooldownUntil = 0;
+    const announced = b.eventsOf("ck").length;
     lobby.damageShip(shipA, shipA.hull, null, Date.now(), "rogue");
     assert.equal(shipA.cloaked, false, "death ends the cloak");
+
+    // (The kill is logged; no separate "uncloaked".)
+    await waitFor(() => b.eventsOf("sk").length > 0, 2000, "kill event");
+    assert.equal(b.eventsOf("ck").length, announced, "death isn't announced as uncloaking");
 
     shutdownAll();
 });

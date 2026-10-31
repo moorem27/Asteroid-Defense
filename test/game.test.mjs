@@ -1537,6 +1537,38 @@ test("game log: a kill flashes up under the score (who, whom, what weapon), then
     stopGames();
 });
 
+test("game log: a pilot cloaking and uncloaking is announced", async () => {
+    const game = await bootOnline();
+    const { t, dom, server } = game;
+    const lobby = server.lobbies()[0].instance;
+
+    t.GAME_LOG.showMs = 2000;
+
+    const WS = makeBrowserWebSocket(server);
+    const other = new WS("ws://game.test/api/ws?v=2&name=BRAVO");
+    await waitFor(() => lobby.ships.size === 2 && t.multiplayer.roster.size === 1, 2000, "BRAVO joined");
+
+    const bravo = [...lobby.ships.values()].find((s) => s.name === "BRAVO");
+    const log = dom.el("game-log");
+    const lines = () => [...log.children].map((li) => li.innerHTML.replace(/<[^>]+>/g, ""));
+
+    lobby.event(["ck", bravo.id, 1]);
+    await waitFor(async () => { await play(game, 30); return log.children.length === 1; }, 2000, "cloak logged");
+    assert.equal(lines()[0], "BRAVO CLOAKED");
+
+    lobby.event(["ck", bravo.id, 0]);
+    await waitFor(async () => { await play(game, 30); return log.children.length === 2; }, 2000, "uncloak logged");
+    assert.equal(lines()[0], "BRAVO UNCLOAKED", "newest on top");
+
+    // Your own cloak.
+    lobby.event(["ck", t.multiplayer.selfId, 1]);
+    await waitFor(async () => { await play(game, 30); return log.children.length === 3; }, 2000, "own cloak logged");
+    assert.equal(lines()[0], "YOU CLOAKED");
+
+    other.close();
+    stopGames();
+});
+
 test("maps online: everyone gets the lobby's map, and each new round switches to a different one", async () => {
     const game = await bootOnline();
     const { t, server } = game;
