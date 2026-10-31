@@ -108,6 +108,8 @@ export class Multiplayer {
      * @param {HTMLElement} [options.statusElement]
      * @param {HTMLElement} [options.leaderboardElement]
      * @param {object}  [options.handlers]  online(welcome), offline(),
+     *                  status(status) ("connecting", "online", "offline"
+     *                  or "elsewhere"),
      *        world(msg), events(list, now), you(msg), round(round, now),
      *        records(top), message(text), dialog(open)
      * @param {object}  [options.callsign]  The name button and box:
@@ -1600,6 +1602,7 @@ export class Multiplayer {
     setStatus(status) {
         this.status = status;
         this.updateStatusText();
+        this.call("status", status);
     }
 
     updateStatusText() {

@@ -59,7 +59,7 @@ export const __test = {
     fireSelectedWeapon, selectWeapon, checkWeaponUnlocks, createAsteroid,
     ufo, UFO, ufoState, ufoNow,
     ships, SHIP_DESIGNS, shipExplosions, smokePuffs, damageSmoke, cycleShip, updateHUD, damagePlayer,
-    cloak, MAPS, parallaxMeshes, orbitLimb, startGame, endGame,
+    cloak, MAPS, parallaxMeshes, orbitLimb, launchGame, endGame,
     get mapName() { return mapName; },
     get multiplayer() { return multiplayer; }
 };
@@ -1359,7 +1359,7 @@ test("maps: ?map= chooses deep space or low orbit; orbit adds the atmosphere's e
     for (let i = 0; i < 3; i++) {
         if (i > 0) {
             t.endGame();
-            t.startGame();
+            t.launchGame();
         }
 
         await waitFor(() => t.parallaxMeshes.length === 3 && (i === 0 || t.mapName !== seen.at(-1)), 3000, `game ${i + 1}'s map`);
@@ -1367,6 +1367,51 @@ test("maps: ?map= chooses deep space or low orbit; orbit adds the atmosphere's e
     }
 
     assert.deepEqual(seen, ["orbit", "space", "orbit"]);
+    stopGames();
+});
+
+test("maps: nothing shows until the lobby's map is known, then only that one (no flash of another)", async () => {
+    const server = await loadWorker();
+
+    // A lobby already in its second round (deep space).
+    const WS = makeBrowserWebSocket(server);
+    const other = new WS("ws://game.test/api/ws?v=2&name=OTHER");
+
+    await waitFor(() => server.lobbies()[0]?.instance.round, 2000, "lobby");
+    const lobby = server.lobbies()[0].instance;
+    lobby.startRound(2, Date.now());
+    assert.equal(lobby.round.map, "space");
+
+    // Still connecting: plain black, nothing loaded.
+    server.hang = true;
+    globalThis.__textureLoads = [];
+
+    const waiting = await loadGame(server, { start: false });
+    await play(waiting, 300);
+
+    assert.equal(waiting.t.parallaxMeshes.length, 0, "no map while connecting");
+    assert.equal(globalThis.__textureLoads.filter((u) => u.includes("bg_")).length, 0, "none loaded");
+    stopGames();
+    server.hang = false;
+
+    // Welcomed on the title screen: the lobby's map, and only that.
+    globalThis.__textureLoads = [];
+
+    const game = await loadGame(server, { start: false });
+    const { t, dom } = game;
+
+    await waitFor(() => t.mapName === "space" && t.parallaxMeshes.length === 3, 3000, "the lobby's map on the title screen");
+
+    await waitFor(() => !t.state.loading, 3000, "models loaded");
+    dom.el("start-button").dispatch("click");
+    await waitFor(() => t.net.active, 3000, "online");
+    await play(game, 200);
+
+    assert.equal(t.mapName, "space");
+    assert.ok(!globalThis.__textureLoads.some((u) => u.includes("bg_orbit")), "low orbit never loaded");
+
+    globalThis.__textureLoads = null;
+    other.close();
     stopGames();
 });
 

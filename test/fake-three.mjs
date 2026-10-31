@@ -223,6 +223,9 @@ export class CanvasTexture extends Texture {}
 export class TextureLoader {
     // Files listed in globalThis.__missingTextures fail to load.
     load(url, onLoad, onProgress, onError) {
+        // (Tests can list what was loaded in globalThis.__textureLoads.)
+        globalThis.__textureLoads?.push(String(url));
+
         const missing = (globalThis.__missingTextures ?? []).some((f) => String(url).endsWith(f));
 
         setTimeout(() => (missing ? onError?.(new Error("404")) : onLoad?.(new Texture())), 0);

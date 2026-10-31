@@ -201,7 +201,7 @@ function pickMap() {
     return "orbit";
 }
 
-// Solo games started since the page opened.
+// Solo games the player has started since the page opened.
 let soloGamesStarted = 0;
 
 let mapName = pickMap();
@@ -209,7 +209,15 @@ let currentMap = MAPS[mapName];
 let PARALLAX_LAYERS = currentMap.layers;
 
 window.ASTEROID_DEFENSE_MAP = mapName;
-scene.background = new THREE.Color(currentMap.background);
+
+// No map is shown until it's known which one this game is on: the
+// lobby's (as soon as the server says), or low orbit when playing
+// offline. Until then the background is plain black, so a map that
+// isn't the one being played never flashes up first.
+const NO_MAP_BACKGROUND = 0x000000;
+let mapDecided = mapForced;
+
+scene.background = new THREE.Color(mapForced ? currentMap.background : NO_MAP_BACKGROUND);
 
 const parallaxMeshes = [];
 
@@ -342,6 +350,9 @@ function installMap(name, textures) {
 // nothing if it's already showing, or if the address chose one.
 function switchMap(name) {
     if (!MAPS[name] || mapForced) return;
+
+    mapDecided = true;
+
     if (name === loadingMap) return;
 
     // Already showing it: just cancel any other map still loading.
@@ -353,7 +364,26 @@ function switchMap(name) {
         return;
     }
 
+    // The old map goes at once (plain black while the new one loads),
+    // rather than staying on screen into the new round.
+    hideMap();
     loadParallaxBackground(name);
+}
+
+// The map to show when it turns out this game is offline (unless one
+// is already decided).
+function showOfflineMap() {
+    if (!mapDecided) switchMap("orbit");
+}
+
+// Plain black, no scenery (installMap brings it back).
+function hideMap() {
+    for (const mesh of parallaxMeshes) mesh.visible = false;
+
+    scene.background = new THREE.Color(NO_MAP_BACKGROUND);
+
+    if (typeof dust !== "undefined") dust.visible = false;
+    if (typeof orbitLimb !== "undefined" && orbitLimb) orbitLimb.visible = false;
 }
 
 // The scenery that goes with a map (its layers are swapped in by
@@ -521,7 +551,7 @@ orbitLimb.frustumCulled = false;
 
 // After the scenery layers (-10 to -8), before the dust (-5).
 orbitLimb.renderOrder = -7;
-orbitLimb.visible = currentMap.limb;
+orbitLimb.visible = mapDecided && currentMap.limb;
 scene.add(orbitLimb);
 
 function updateOrbitLimb() {
@@ -554,9 +584,11 @@ function updateOrbitLimb() {
     );
 }
 
-console.info(`Map: ${currentMap.name}`);
-
-loadParallaxBackground();
+// (Otherwise the map waits: see NO_MAP_BACKGROUND.)
+if (mapForced) {
+    console.info(`Map: ${currentMap.name}`);
+    loadParallaxBackground();
+}
 
 // ------------------------------------------------------------
 // SPACE DUST
@@ -612,7 +644,7 @@ dust.name = "SpaceDust";
 dust.frustumCulled = false;
 dust.renderOrder = -5;
 
-dust.visible = (currentMap.dustOpacity ?? DUST_CONFIG.opacity) > 0;
+dust.visible = mapDecided && (currentMap.dustOpacity ?? DUST_CONFIG.opacity) > 0;
 
 scene.add(dust);
 
@@ -9626,12 +9658,6 @@ function startGame() {
     // In a lobby, between rounds: the next round starts by itself.
     if (net.active && net.round?.phase === "ended") return;
 
-    // Solo: every game after the first is on the other map.
-    if (!net.active) {
-        if (soloGamesStarted > 0) switchMap(mapName === "orbit" ? "space" : "orbit");
-        soloGamesStarted++;
-    }
-
     resetGame();
 
     net.dead = false;
@@ -9703,6 +9729,14 @@ function launchGame() {
         // Already in a lobby: go straight into the shared world.
         enterOnlineWorld(net.pendingWelcome);
     } else {
+        // Solo: every game the player starts after the first is on the
+        // other map. (Not when a dropped connection turns the game solo
+        // for a moment: that keeps the lobby's map.)
+        if (soloGamesStarted > 0 && mapDecided && !net.active) {
+            switchMap(mapName === "orbit" ? "space" : "orbit");
+        }
+
+        soloGamesStarted++;
         startGame();
     }
 }
@@ -10018,6 +10052,9 @@ function getNetworkState() {
 // ------------------------------------------------------------
 
 function onNetOnline(welcome) {
+    // The lobby's map, straight away (even on the title screen).
+    switchMap(welcome.round?.map);
+
     // Models still loading, or still on the title screen: kept until
     // the player presses INSERT COIN (see launchGame).
     if (state.loading || !state.launched) {
@@ -10853,6 +10890,7 @@ function onNetRound(round) {
 
     if (net.pendingWelcome) {
         net.pendingWelcome.round = round;
+        if (round.phase === "playing") switchMap(round.map);
         return;
     }
 
@@ -11326,6 +11364,12 @@ function startMultiplayer() {
 
                     online: onNetOnline,
                     offline: onNetOffline,
+
+                    // Couldn't get online (or multiplayer is off): low
+                    // orbit, the solo game's first map.
+                    status: (status) => {
+                        if (status !== "connecting" && status !== "online") showOfflineMap();
+                    },
                     you: onNetYou,
                     world: onNetWorld,
                     events: onNetEvents,
@@ -11340,6 +11384,7 @@ function startMultiplayer() {
             multiplayer = null;
 
             console.warn("Multiplayer unavailable; playing offline.", error);
+            showOfflineMap();
 
             const status = $("net-status");
 
