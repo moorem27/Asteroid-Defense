@@ -322,14 +322,14 @@ test("weapons: unlock, switch with keys and the button, rockets only on the trig
 
     assert.equal(t.weapons.laserUnlocked && t.weapons.rocketsUnlocked, true);
     assert.equal(dom.el("weapon-switch").hidden, false, "button appears");
-    assert.equal(t.weapons.selected, "blaster", "selection unchanged by unlocking");
+    assert.equal(t.weapons.selected, "cannon", "selection unchanged by unlocking");
 
     dom.key("keydown", "Digit3");
     assert.equal(t.weapons.selected, "rockets");
     assert.equal(dom.el("weapon-name").textContent, "ROCKETS");
 
     dom.el("weapon-switch").dispatch("click");
-    assert.equal(t.weapons.selected, "blaster", "button cycles");
+    assert.equal(t.weapons.selected, "cannon", "button cycles");
 
     dom.key("keydown", "KeyQ");
     assert.equal(t.weapons.selected, "rockets", "Q cycles back");

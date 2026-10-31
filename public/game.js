@@ -1402,7 +1402,7 @@ window.addEventListener("keydown", (event) => {
 
     // Weapon selection: 1 / 2 / 3 (or the number pad), Q / E to cycle.
     const weaponKeys = {
-        Digit1: "blaster", Numpad1: "blaster",
+        Digit1: "cannon", Numpad1: "cannon",
         Digit2: "laser", Numpad2: "laser",
         Digit3: "rockets", Numpad3: "rockets"
     };
@@ -3526,7 +3526,7 @@ const net = {
 // ============================================================
 // WEAPONS
 // Three weapons, one in use at a time:
-//   BLASTER  always available.
+//   CANNON   always available.
 //   LASER    unlocks at LASER_UNLOCK_SCORE. Pierces everything along
 //            its beam.
 //   ROCKETS  unlock at ROCKET_UNLOCK_SCORE. Fired with the trigger
@@ -3548,7 +3548,7 @@ const ROCKET_UNLOCK_SCORE = 20000;
 
 // `net` is the weapon number the server uses.
 const WEAPON_LIST = [
-    { key: "blaster", name: "BLASTER", net: 0 },
+    { key: "cannon", name: "CANNON", net: 0 },
     { key: "laser", name: "LASER", net: 1 },
     { key: "rockets", name: "ROCKETS", net: 2 }
 ];
@@ -3627,8 +3627,8 @@ const weapons = {
     laserUnlocked: false,
     rocketsUnlocked: false,
 
-    // "blaster", "laser" or "rockets".
-    selected: "blaster",
+    // "cannon", "laser" or "rockets".
+    selected: "cannon",
 
     laserCooldown: 0,
     rocketCooldown: 0,
@@ -4506,7 +4506,7 @@ function resetWeapons() {
 
     weapons.laserUnlocked = false;
     weapons.rocketsUnlocked = false;
-    weapons.selected = "blaster";
+    weapons.selected = "cannon";
     weapons.laserCooldown = 0;
     weapons.rocketCooldown = 0;
     weapons.rocketSide = 1;
@@ -10435,7 +10435,7 @@ const GAME_LOG = {
     showMs: 5000
 };
 
-const LOG_WEAPONS = { blaster: "BLASTER", laser: "LASER", rockets: "ROCKETS" };
+const LOG_WEAPONS = { cannon: "CANNON", laser: "LASER", rockets: "ROCKETS" };
 
 const LOG_CAUSES = {
     rogue: "THE ROGUE ASTEROID",

@@ -217,7 +217,7 @@ const SHIP = {
     maxShotOffset: 6
 };
 
-const WEAPON = { BLASTER: 0, LASER: 1, ROCKETS: 2 };
+const WEAPON = { CANNON: 0, LASER: 1, ROCKETS: 2 };
 
 // How many ship designs pilots can pick from (SHIP_DESIGNS in game.js).
 const SHIP_DESIGNS = 4;
@@ -1586,7 +1586,7 @@ export class Lobby extends DurableObject {
         const dx = Math.sin(r);
         const dz = Math.cos(r);
 
-        if (weapon === WEAPON.BLASTER) {
+        if (weapon === WEAPON.CANNON) {
             this.bullets.push({
                 owner: ship,
                 x,
@@ -2432,7 +2432,7 @@ export class Lobby extends DurableObject {
                     this.event(["uh", round2(hx), round2(hz), b.owner.id, 0]);
                     this.ufoAttacked(b.owner, now);
                 } else {
-                    this.damageShip(best.ref, BULLET.shipDamage, b.owner, now, null, "blaster");
+                    this.damageShip(best.ref, BULLET.shipDamage, b.owner, now, null, "cannon");
                 }
 
                 continue;
@@ -2769,7 +2769,7 @@ export class Lobby extends DurableObject {
     // cooldown between hits, and players are told what got them).
     // cause "ufo": the UFO's plasma beam, which nothing stops and which
     // no pilot gets credit for. "asteroid" and "mine": just for the
-    // game log. weapon: the attacker's ("blaster", "laser", "rockets").
+    // game log. weapon: the attacker's ("cannon", "laser", "rockets").
     damageShip(ship, amount, attacker, now, cause = null, weapon = null) {
         if (!ship.alive) return;
 

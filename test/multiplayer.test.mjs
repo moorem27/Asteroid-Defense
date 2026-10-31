@@ -676,7 +676,7 @@ test("bullets damage other pilots; a kill scores a bonus and the victim respawns
     const kill = b.eventsOf("sk").find((e) => e[1] === b.id);
     assert.ok(kill, "B destroyed");
     assert.equal(kill[2], a.id, "by ALPHA");
-    assert.equal(kill[6], "blaster", "with the blaster (for the game log)");
+    assert.equal(kill[6], "cannon", "with the cannon (for the game log)");
     assert.equal(kill[7], 2500, "worth 2,500");
     assert.equal(b.you.alive, false);
     assert.equal(a.you.sc, 200 + 200 + 2500);
@@ -2351,14 +2351,14 @@ test("pvp points: every hit and kill scores, for everyone (same address too); re
     const hit = (victim, attacker) => {
         Object.assign(victim, { alive: true, hull: 3, hitCooldownUntil: 0, shieldUntil: 0, warpUntil: 0 });
         const before = attacker.score;
-        lobby.damageShip(victim, 1, attacker, Date.now(), null, "blaster");
+        lobby.damageShip(victim, 1, attacker, Date.now(), null, "cannon");
         return attacker.score - before;
     };
 
     const kill = (victim, killer) => {
         Object.assign(victim, { alive: true, hull: 1, hitCooldownUntil: 0, shieldUntil: 0, warpUntil: 0 });
         const before = killer.score;
-        lobby.damageShip(victim, 1, killer, Date.now(), null, "blaster");
+        lobby.damageShip(victim, 1, killer, Date.now(), null, "cannon");
         return killer.score - before;
     };
 
