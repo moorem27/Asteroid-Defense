@@ -285,7 +285,7 @@ test("asteroids are rarer: a lone pilot gets a handful around them, not a screen
     ship.st = 1;
 
     for (let i = 0; i < 40; i++) {
-        ship.stateAt = Date.now();
+        ship.stateAt = ship.playingAt = Date.now();
         ship.nextAsteroidAt = 0;
         lobby.spawnThings(Date.now());
     }
@@ -774,14 +774,30 @@ test("clans: pilots with the same [TAG] can't hurt each other; everyone else can
     a.fire(0, 0, 1.1, 0);
     await waitFor(() => a.eventsOf("sh").some((e) => e[1] === d.id), 1500, "hit DELTA (no tag)");
 
-    // Renaming into the clan makes you a teammate at once.
+    // Renaming into the clan doesn't help mid-fight: the new tag only
+    // counts from the next respawn.
+    const shipD = shipOf(lobby, d);
+
     d.send({ t: "n", name: "[KO]DELTA" });
-    await waitFor(() => shipOf(lobby, d).name === "[KO]DELTA", 1000, "renamed");
-    const hull = shipOf(lobby, d).hull;
-    await holdAll(1300);
+    await waitFor(() => shipD.name === "[KO]DELTA", 1000, "renamed");
+
+    const hull = shipD.hull;
+    shipD.hitCooldownUntil = 0;
+    shipOf(lobby, a).lastFire = [0, 0, 0];
+    a.fire(0, 0, 1.1, 0);
+    await holdAll(400);
+    assert.equal(shipD.hull, hull - 1, "still fair game until respawning");
+
+    // Respawned: a teammate.
+    lobby.placeShip(shipD, Date.now());
+    await holdAll(300);
+    unshield(lobby);
+    shipD.hitCooldownUntil = 0;
+    shipOf(lobby, a).lastFire = [0, 0, 0];
+
     a.fire(0, 0, 1.1, 0);
     await holdAll(500);
-    assert.equal(shipOf(lobby, d).hull, hull, "now a teammate");
+    assert.equal(shipD.hull, 3, "now a teammate");
 
     shutdownAll();
 });
@@ -2038,6 +2054,236 @@ test("cloak: only from 25,000; a cloaked ship is hidden from others, can't fire,
     assert.equal(shipA.cloaked, false, "death ends the cloak");
 
     shutdownAll();
+});
+
+test("clans: a new tag counts from the next respawn, even across a reload", async () => {
+    const server = await loadWorker();
+    const token = "0123456789abcdef0123";
+    const a = await rawClient(server, "[KO]ALPHA");
+    const d = await rawClient(server, "DELTA", { token });
+    const lobby = quietLobby(server);
+
+    d.send({ t: "n", name: "[KO]DELTA" });
+    await waitFor(() => shipOf(lobby, d).name === "[KO]DELTA", 1000, "renamed");
+
+    // Reloading the page doesn't switch sides any sooner.
+    const again = await rawClient(server, "[KO]DELTA", { token });
+    const ship = shipOf(lobby, again);
+
+    assert.equal(again.welcome.cn, "DELTA", "told which tag counts");
+    assert.equal(lobby.sameClan(ship, shipOf(lobby, a)), false, "not a teammate yet");
+
+    lobby.placeShip(ship, Date.now());
+    assert.equal(lobby.sameClan(ship, shipOf(lobby, a)), true, "after respawning, a teammate");
+
+    shutdownAll();
+});
+
+test("presence: a ship that isn't flying can't fire, and stopping takes 3 s to protect it", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const lobby = quietLobby(server);
+    const shipB = shipOf(lobby, b);
+
+    // B says it isn't flying (st 0): hidden, and its shots are refused.
+    const idle = async (ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+            a.state(0, 0);
+            b.state(0, 6, Math.PI, { st: 0 });
+            await sleep(50);
+        }
+    };
+
+    await idle(150);
+    unshield(lobby);
+
+    b.fire(0, 0, 4.9, Math.PI);
+    await sleep(30);
+    assert.equal(lobby.bullets.length, 0, "can't fire while not flying");
+
+    const row = lobby.snapshotMessage(Date.now()).p.find((p) => p[0] === b.id);
+    assert.equal(row[7] & 1, 0, "not shown");
+
+    // Flying for a moment, then claiming not to be: still hittable.
+    b.state(0, 6, Math.PI);
+    await sleep(30);
+    b.state(0, 6, Math.PI, { st: 0 });
+    await sleep(30);
+
+    a.fire(0, 0, 1.1, 0);
+    await idle(300);
+    assert.equal(shipB.hull, 2, "hit despite switching off");
+
+    // Gone quiet: after 3 s it can't fire from where it was.
+    await hold([[a, 0, 0]], 3100);
+    shipB.lastFire = [0, 0, 0];
+    b.fire(0, 0, 4.9, Math.PI);
+    await sleep(30);
+    assert.equal(lobby.bullets.filter((x) => x.owner === shipB).length, 0, "silent ship can't fire");
+
+    shutdownAll();
+});
+
+test("movement: reporting more often doesn't buy speed", async () => {
+    const server = await loadWorker({ MOVE_CHECK: "on" });
+    const a = await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+    const ship = shipOf(lobby, a);
+
+    const x0 = ship.x;
+    const dir = x0 > 0 ? -1 : 1;
+    const start = Date.now();
+
+    // 18 units every 50 ms (360 units/s), which once got through.
+    let x = x0;
+    for (let i = 0; i < 10; i++) {
+        x += dir * 18;
+        a.state(x, ship.z);
+        await sleep(50);
+    }
+
+    const seconds = (Date.now() - start) / 1000;
+    const moved = Math.abs(ship.x - x0);
+
+    assert.ok(moved <= 45 * seconds + 20, `moved ${moved.toFixed(1)} units in ${seconds.toFixed(2)} s`);
+
+    shutdownAll();
+});
+
+test("cloak: hits, laser sparks, crystal pickups and warp kills don't give a cloaked ship away", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+    const c = await rawClient(server, "CHARLIE");
+    const lobby = quietLobby(server);
+    const shipA = shipOf(lobby, a);
+
+    shipA.score = 26000;
+    shipOf(lobby, b).score = 20000;
+
+    // A cloaked straight ahead of B; C watching from afar.
+    const report = async (ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+            a.state(0, 20, 0, { ck: 1 });
+            b.state(0, 0);
+            c.state(40, 40);
+            await sleep(50);
+        }
+    };
+
+    await report(200);
+    unshield(lobby);
+    assert.equal(shipA.cloaked, true);
+
+    // B's laser hits A.
+    b.fire(1, 0, 1.1, 0);
+    await report(300);
+
+    assert.equal(shipA.hull, 2, "hit");
+    assert.ok(a.eventsOf("lh").length >= 1, "the cloaked pilot sees the spark");
+    assert.equal(b.eventsOf("lh").length, 0, "the shooter doesn't");
+    assert.equal(c.eventsOf("lh").length, 0, "nor does anyone else");
+
+    assert.ok(a.eventsOf("sh").some((e) => e[1] === a.id && e[4] !== null), "the pilot hears of the hit");
+    assert.ok(b.eventsOf("sh").some((e) => e[1] === a.id && e[4] === null), "the shooter: a hit, but not where");
+    assert.equal(c.eventsOf("sh").filter((e) => e[1] === a.id).length, 0, "bystanders hear nothing");
+
+    const row = lobby.snapshotMessage(Date.now()).p.find((p) => p[0] === a.id);
+    assert.equal(row[10], 3, "snapshots don't show the damage");
+
+    // A takes a crystal.
+    lobby.spawnCrystal(0, 20.5);
+    await report(200);
+
+    assert.ok(c.eventsOf("cc").some((e) => e[2] === ""), "others see the crystal go...");
+    assert.ok(!c.eventsOf("cc").some((e) => e[2] === a.id), "...but not who took it");
+    assert.ok(a.eventsOf("cc").some((e) => e[2] === a.id), "the pilot knows");
+
+    // A's warp bubble clears a rock.
+    shipA.warpUntil = Date.now() + 5000;
+    lobby.spawnAsteroid(0, 22, 0.72, 0, 0);
+    await report(200);
+
+    const cleared = c.eventsOf("ad").at(-1);
+    assert.ok(cleared, "rock cleared");
+    assert.equal(cleared[4], "", "not credited by name");
+    assert.ok(shipA.score > 26000 + 500, "still scores");
+
+    shutdownAll();
+});
+
+test("score farming: nothing off a pilot on your own address; repeat kills are worth less", async () => {
+    const server = await loadWorker();
+
+    server.clientIp = "203.0.113.7";
+    const a = await rawClient(server, "ALPHA");
+    const b = await rawClient(server, "BRAVO");
+
+    server.clientIp = "2001:db8:1:2::10";
+    const c = await rawClient(server, "CHARLIE");
+
+    server.clientIp = "2001:0db8:0001:0002:abcd::1";
+    const e = await rawClient(server, "ECHO");
+
+    server.clientIp = "198.51.100.20";
+    const d = await rawClient(server, "DELTA");
+
+    const lobby = quietLobby(server);
+    const [sa, sb, sc, sd, se] = [a, b, c, d, e].map((x) => shipOf(lobby, x));
+
+    const kill = (victim, killer) => {
+        Object.assign(victim, { alive: true, hull: 1, hitCooldownUntil: 0, shieldUntil: 0, warpUntil: 0 });
+        const before = killer.score;
+        lobby.damageShip(victim, 1, killer, Date.now());
+        return killer.score - before;
+    };
+
+    assert.equal(kill(sb, sa), 0, "same IPv4 address: no points");
+    assert.equal(sa.kills, 0, "and no kill counted");
+    assert.equal(kill(sc, se), 0, "same IPv6 /64: no points");
+
+    // Hit + kill: 2700, then half, a quarter, then nothing.
+    const values = [];
+    for (let i = 0; i < 5; i++) values.push(kill(sa, sd));
+
+    assert.deepEqual(values, [2700, 1350, 675, 0, 0]);
+    assert.equal(sd.kills, 3);
+
+    assert.equal(kill(sc, sd), 2700, "someone else: full points");
+
+    shutdownAll();
+});
+
+test("departed scores: only the best are kept, so the saved round stays small", async () => {
+    const server = await loadWorker();
+    await rawClient(server, "ALPHA");
+    const lobby = quietLobby(server);
+
+    for (let i = 0; i < 250; i++) {
+        lobby.departed.set(`token-${i}`, { round: lobby.round.n, score: i, kills: 0, deaths: 0, nextWarp: 10000 });
+    }
+
+    lobby.trimDeparted();
+
+    assert.equal(lobby.departed.size, 200);
+    assert.equal(Math.min(...[...lobby.departed.values()].map((d) => d.score)), 50, "the lowest went");
+
+    shutdownAll();
+});
+
+test("client: connects with wss: except on this computer or the home network", () => {
+    const { isLocalHost } = _internals;
+
+    for (const host of ["localhost", "127.0.0.1", "192.168.1.20", "10.0.0.5", "172.20.1.1", "[::1]", "pc.local"]) {
+        assert.equal(isLocalHost(host), true, host);
+    }
+
+    for (const host of ["amaxcon.com", "www.amaxcon.com", "game.test", "172.32.0.1", "8.8.8.8"]) {
+        assert.equal(isLocalHost(host), false, host);
+    }
 });
 
 test("client: ranks beside names (a new one every 10,000), and a cloaked pilot vanishes from view and the radar", async () => {

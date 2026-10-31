@@ -111,8 +111,10 @@ wearing `[PASS]` can't damage any other pilot, and no pilot can damage them
 (asteroids, mines, the rogue asteroid and the UFO still can).
 
 Tags are 2–4 letters or digits and go through
-the same word filter as callsigns; renaming in or out of a clan takes effect
-straight away.
+the same word filter as callsigns. A new name shows straight away, but
+renaming in or out of a clan (or into `[PASS]`) only changes who can hurt
+whom from that pilot's next respawn or the next round, so it can't be used to
+escape a fight.
 
 ### Maps
 
@@ -374,12 +376,22 @@ What's already protected, in the code:
   weapon unlocks, the cloak, rates of fire and the all-time list. A modified
   browser can't award itself points.
 - **Movement is checked:** the server won't believe a ship moving faster than
-  ships can fly (40.5 units a second, boosted in a warp bubble), and puts a
-  pilot back if they get far out of step.
+  ships can fly (40.5 units a second, boosted in a warp bubble), however often
+  it reports, and puts a pilot back if they get far out of step.
+- **No hiding by leaving:** a ship has to be flying to fire, and one that stops
+  (or goes quiet) stays visible and hittable for 3 seconds.
+- **The cloak hides the ship from everyone else:** no event gives its position
+  or names it (hits, laser sparks, crystals it picks up, rocks its warp bubble
+  clears). Others can still see the crystal vanish or the mine go off.
+- **Score farming doesn't pay:** pilots on the same IP address (or IPv6 /64)
+  score nothing off each other, and repeat kills of the same pilot in a round
+  are worth full, half, a quarter, then nothing.
 - **Floods are cut off:** a connection that keeps sending messages faster than
   the game ever does, or sends an oversized one, is closed (every message
   counts toward Cloudflare's daily allowance, even ignored ones).
-- **At most 6 connections per IP address per lobby.**
+- **At most 6 connections per IP address (or IPv6 /64) per lobby.**
+- **The game connection is always encrypted** (`wss:`), even from a page opened
+  as `http://`, except for `wrangler dev` on this computer or the home network.
 - **Only the game's own pages can connect:** `ALLOWED_ORIGINS` in
   `wrangler.jsonc` lists amaxcon.com and `wrangler dev` on this computer. To
   play from another device on your home network during `wrangler dev`, add its
@@ -406,6 +418,11 @@ Add a rate limiting rule so one address can't open connections endlessly:
 
 A real player reconnects at most a few times a minute, so this never gets in
 their way.
+
+Also recommended: **SSL/TLS** → **Edge Certificates** → turn on **Always Use
+HTTPS**, and enable **HSTS** there. Then the page itself always loads over
+HTTPS. That matters because the page keeps each pilot's token (which holds
+their score) in the browser.
 
 ### If you edit the import map in index.html
 

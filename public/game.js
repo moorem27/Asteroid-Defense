@@ -10047,6 +10047,13 @@ function enterOnlineWorld(welcome) {
     // back): say so, rather than looking like a fresh start.
     const rejoined = Boolean(net.lastRoundEnd) && welcome.round?.endsAt === net.lastRoundEnd;
 
+    // A UFO visiting this solo game: it leaves the usual way (charging
+    // up and zooming off) instead of vanishing when the game goes
+    // online.
+    const soloVisit = ufo.plan && !ufo.net && ["arrive", "observe", "charge"].includes(ufo.phase)
+        ? { plan: ufo.plan, clock: ufo.clock, noticed: ufo.noticed }
+        : null;
+
     net.pendingWelcome = null;
     net.active = true;
     net.round = null;
@@ -10063,6 +10070,16 @@ function enterOnlineWorld(welcome) {
 
     applyYou(welcome.you);
     applyWorld(welcome.world);
+
+    // (Unless the lobby has a visit of its own, which takes over.)
+    if (soloVisit && !ufo.plan) {
+        ufoLeave(soloVisit.plan, soloVisit.clock);
+        ufo.plan = soloVisit.plan;
+        ufo.net = false;
+        ufo.clock = soloVisit.clock;
+        ufo.noticed = soloVisit.noticed;
+        ufo.zoomed = false;
+    }
 
     const round = net.round;
 

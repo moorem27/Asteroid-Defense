@@ -135,15 +135,24 @@ const FLOOD = {
 // At most this many connections from one IP address per lobby (a
 // household or a school on one connection still fits). Cloudflare's
 // rate limiting rule on /api/ws (see SETUP.md) is the main defense
-// against floods of connections.
+// against floods of connections. (IPv6 addresses count by their /64,
+// which is one household; see addressGroup.)
 const MAX_PER_IP = 6;
+
+// At most this many departed pilots' scores are kept per round (the
+// best ones), so the saved round stays well under Cloudflare's
+// 128 KiB limit for one stored value however many people come and go.
+const MAX_DEPARTED = 200;
 
 // Movement. Ships fly themselves (so steering feels instant), but the
 // server won't believe a move faster than any ship can go: boosted and
-// in a warp bubble a ship does 15 * 1.35 * 2 = 40.5 units/s. A report
-// further than that (plus some slack for uneven delivery) only counts
-// as far as a ship could have flown; if the pilot's own idea of where
-// they are drifts too far from the server's, they're put back.
+// in a warp bubble a ship does 15 * 1.35 * 2 = 40.5 units/s. Each ship
+// has a distance budget that refills at maxSpeed and holds at most
+// maxSpeed * (time since its last report + graceSec) + slack, so uneven
+// delivery is forgiven but sending reports faster doesn't buy distance.
+// A report further than the budget only counts as far as it allows; if
+// the pilot's own idea of where they are drifts too far from the
+// server's, they're put back.
 const MOVE = {
     maxSpeed: 45,
     graceSec: 0.3,
@@ -191,8 +200,10 @@ const SHIP = {
     spawnShieldMs: 3000,
     // ...or for this long after taking a hit.
     hitCooldownMs: 1500,
-    // A ship that reports nothing for this long is treated as absent
-    // (no collisions, nothing spawned for it).
+    // A ship that hasn't reported flying (st 1) for this long is treated
+    // as absent (not shown, no collisions, nothing spawned for it, can't
+    // fire). Leaving the game (st 0 or 2, or going quiet) takes this long
+    // to count, so it can't be used to dodge shots mid-fight.
     presentMs: 3000,
     // How far a reported shot origin may be from where the server
     // thinks the ship is.
@@ -240,6 +251,14 @@ const POINTS = {
     crystal: 500,
     shipHit: 200,
     shipKill: 2500
+};
+
+// Score farming (one player shooting their own second ship over and
+// over). Pilots on the same IP address (or IPv6 /64) score nothing off
+// each other, and each kill of the same pilot in a round is worth less:
+// full, half, a quarter, then nothing (hits on them follow suit).
+const PVP = {
+    repeatKillValue: [1, 0.5, 0.25]
 };
 
 const WARP = {
@@ -774,11 +793,11 @@ export class Lobby extends DurableObject {
         const scores = [];
 
         for (const [token, d] of this.departed) {
-            scores.push([token, d.score, d.kills, d.deaths, d.nextWarp, d.x ?? null, d.z ?? null]);
+            scores.push([token, d.score, d.kills, d.deaths, d.nextWarp, d.x ?? null, d.z ?? null, d.clanName ?? null]);
         }
 
         for (const s of this.ships.values()) {
-            if (s.token) scores.push([s.token, s.score, s.kills, s.deaths, s.nextWarp, round2(s.x), round2(s.z)]);
+            if (s.token) scores.push([s.token, s.score, s.kills, s.deaths, s.nextWarp, round2(s.x), round2(s.z), s.clanName]);
         }
 
         const resume = {
@@ -827,7 +846,7 @@ export class Lobby extends DurableObject {
             results: null
         };
 
-        for (const [token, score, kills, deaths, nextWarp, x, z] of saved.scores ?? []) {
+        for (const [token, score, kills, deaths, nextWarp, x, z, clanName] of saved.scores ?? []) {
             if (typeof token !== "string") continue;
 
             this.departed.set(token, {
@@ -837,9 +856,12 @@ export class Lobby extends DurableObject {
                 deaths: Number(deaths) || 0,
                 nextWarp: Number(nextWarp) || WARP.scoreInterval,
                 x: Number.isFinite(x) ? x : null,
-                z: Number.isFinite(z) ? z : null
+                z: Number.isFinite(z) ? z : null,
+                clanName: typeof clanName === "string" ? clanName : null
             });
         }
+
+        this.trimDeparted();
 
         this.scheduleUfo(now);
         return true;
@@ -855,11 +877,27 @@ export class Lobby extends DurableObject {
         ship.kills = previous.kills;
         ship.deaths = previous.deaths;
         ship.nextWarp = previous.nextWarp;
+
+        // The clan tag they last spawned with (a rename and a reload
+        // doesn't change sides any sooner than a respawn would).
+        if (previous.clanName) ship.clanName = previous.clanName;
+
         this.departed.delete(ship.token);
 
         return Number.isFinite(previous.x) && Number.isFinite(previous.z)
             ? { x: previous.x, z: previous.z }
             : null;
+    }
+
+    // Keep only the best MAX_DEPARTED departed scores.
+    trimDeparted() {
+        if (this.departed.size <= MAX_DEPARTED) return;
+
+        const worst = [...this.departed]
+            .sort((a, b) => a[1].score - b[1].score)
+            .slice(0, this.departed.size - MAX_DEPARTED);
+
+        for (const [token] of worst) this.departed.delete(token);
     }
 
     // ---------------------------------------------------------
@@ -922,7 +960,9 @@ export class Lobby extends DurableObject {
 
         const ip = request.headers.get("CF-Connecting-IP");
 
-        if (ip && sockets.filter((ws) => readAttachment(ws)?.ip === ip).length >= MAX_PER_IP) {
+        const address = addressGroup(ip);
+
+        if (address && sockets.filter((ws) => addressGroup(readAttachment(ws)?.ip) === address).length >= MAX_PER_IP) {
             console.warn(`Refused a connection: already ${MAX_PER_IP} from one address in this lobby`);
             return new Response("Too many connections", { status: 429 });
         }
@@ -977,7 +1017,7 @@ export class Lobby extends DurableObject {
         this.ctx.acceptWebSocket(server);
         server.serializeAttachment({ id, name, color, token, ip });
 
-        const ship = this.newShip({ id, name, color, token }, now);
+        const ship = this.newShip({ id, name, color, token, ip }, now);
 
         // Same player back in the same round: restore their score, and
         // put them back about where they were.
@@ -1000,7 +1040,8 @@ export class Lobby extends DurableObject {
         for (const ws of this.liveSockets()) {
             const info = readAttachment(ws);
             if (info && ws !== server) {
-                players.push({ id: info.id, name: info.name, color: info.color });
+                const cn = this.ships.get(ws)?.clanName ?? info.name;
+                players.push({ id: info.id, name: info.name, color: info.color, cn });
             }
         }
 
@@ -1009,6 +1050,7 @@ export class Lobby extends DurableObject {
             v: PROTOCOL_VERSION,
             id,
             name,
+            cn: ship.clanName,
             color,
             max: MAX_PLAYERS,
             lobby: this.lobbyId,
@@ -1023,7 +1065,7 @@ export class Lobby extends DurableObject {
             records: this.lastRecords
         });
 
-        this.broadcast({ t: "join", p: { id, name, color } }, server);
+        this.broadcast({ t: "join", p: { id, name, color, cn: ship.clanName } }, server);
 
         this.startTimer();
 
@@ -1121,8 +1163,11 @@ export class Lobby extends DurableObject {
                 deaths: ship.deaths,
                 nextWarp: ship.nextWarp,
                 x: round2(ship.x),
-                z: round2(ship.z)
+                z: round2(ship.z),
+                clanName: ship.clanName
             });
+
+            this.trimDeparted();
         }
 
         // Its rockets disappear with it.
@@ -1209,6 +1254,13 @@ export class Lobby extends DurableObject {
             color: info.color,
             token: info.token ?? null,
 
+            // Whose clan tag counts for friendly fire: the name at the
+            // last (re)spawn, so a rename mid-fight can't shield anyone.
+            clanName: info.name,
+
+            // The connection's address, grouped (see PVP).
+            address: addressGroup(info.ip),
+
             x: 0,
             z: 0,
             r: 0,
@@ -1219,6 +1271,12 @@ export class Lobby extends DurableObject {
             weapon: 0,
             design: 0,
             stateAt: now,
+
+            // The last report of flying (st 1); see SHIP.presentMs.
+            playingAt: 0,
+
+            // Distance the ship may still move (see MOVE).
+            moveBudget: MOVE.maxSpeed * MOVE.graceSec + MOVE.slack,
 
             // Increases on every (re)spawn; position reports from an
             // older life are ignored.
@@ -1334,7 +1392,7 @@ export class Lobby extends DurableObject {
     // has the final say; a rejected name is never shown to anyone.
     onRename(ws, ship, data, now) {
         if (now - ship.lastRename < RENAME_COOLDOWN_MS) {
-            safeSend(ws, { t: "name", id: ship.id, name: ship.name, rejected: "wait" });
+            safeSend(ws, { t: "name", id: ship.id, name: ship.name, cn: ship.clanName, rejected: "wait" });
             return;
         }
 
@@ -1343,12 +1401,12 @@ export class Lobby extends DurableObject {
         const result = checkName(data.name);
 
         if (!result.ok) {
-            safeSend(ws, { t: "name", id: ship.id, name: ship.name, rejected: result.reason });
+            safeSend(ws, { t: "name", id: ship.id, name: ship.name, cn: ship.clanName, rejected: result.reason });
             return;
         }
 
         if (result.name === ship.name) {
-            safeSend(ws, { t: "name", id: ship.id, name: ship.name });
+            safeSend(ws, { t: "name", id: ship.id, name: ship.name, cn: ship.clanName });
             return;
         }
 
@@ -1360,7 +1418,9 @@ export class Lobby extends DurableObject {
             ws.serializeAttachment({ ...info, name: result.name });
         }
 
-        this.broadcast({ t: "name", id: ship.id, name: result.name });
+        // (A new clan tag only counts from the next respawn: see
+        // placeShip.)
+        this.broadcast({ t: "name", id: ship.id, name: result.name, cn: ship.clanName });
     }
 
     onState(ship, data, now) {
@@ -1391,10 +1451,18 @@ export class Lobby extends DurableObject {
 
         if (this.moveCheck && this.round?.phase === "playing") {
             const gap = Math.min(Math.max(0, now - ship.stateAt), MOVE.maxGapMs) / 1000;
-            const allowed = MOVE.maxSpeed * (gap + MOVE.graceSec) + MOVE.slack;
+
+            ship.moveBudget = Math.min(
+                MOVE.maxSpeed * (gap + MOVE.graceSec) + MOVE.slack,
+                ship.moveBudget + MOVE.maxSpeed * gap
+            );
+
+            const allowed = ship.moveBudget;
             const dx = x - ship.x;
             const dz = z - ship.z;
             const far = Math.hypot(dx, dz);
+
+            ship.moveBudget -= Math.min(far, allowed);
 
             if (far > allowed) {
                 nx = ship.x + (dx / far) * allowed;
@@ -1425,11 +1493,16 @@ export class Lobby extends DurableObject {
         ship.vz = round2(vz);
         ship.th = Math.round(finite(data.th, -1, 1) ?? 0);
         ship.stateAt = now;
+
+        if (ship.st === 1) ship.playingAt = now;
     }
 
     onFire(ship, data, now) {
         if (!this.round || this.round.phase !== "playing") return;
         if (!ship.alive) return;
+
+        // Only a ship that's flying, and so can be seen and hit.
+        if (ship.st !== 1 || !this.isPresent(ship, now)) return;
 
         // No weapons while cloaked.
         if (ship.cloaked) return;
@@ -1586,6 +1659,15 @@ export class Lobby extends DurableObject {
             }
 
             this.events = [];
+
+            if (this.privateEvents.size > 0) {
+                for (const ws of this.ctx.getWebSockets()) {
+                    const list = this.privateEvents.get(this.ships.get(ws));
+                    if (list) safeSend(ws, { t: "ev", now, e: list });
+                }
+
+                this.privateEvents.clear();
+            }
 
             if (this.stepCount % SNAPSHOT_EVERY === 0) {
                 this.broadcastRaw(JSON.stringify(this.snapshotMessage(now)));
@@ -1975,6 +2057,10 @@ export class Lobby extends DurableObject {
         this.rockets = [];
         this.rogue = newRogue();
         this.events = [];
+        this.privateEvents = new Map();
+
+        // Kills of each pilot by each other pilot this round (see PVP).
+        this.killCounts = new Map();
 
         // The current UFO visit's plan (public/ufo.js), or null, and
         // when the next ones are due.
@@ -2057,7 +2143,9 @@ export class Lobby extends DurableObject {
         if (i < 0) return;
 
         this.asteroids.splice(i, 1);
-        this.event(["ad", a.id, round2(a.x), round2(a.z), by ? by.id : ""]);
+
+        // (A cloaked ship's warp bubble doesn't say whose it is.)
+        this.event(["ad", a.id, round2(a.x), round2(a.z), by && !by.cloaked ? by.id : ""]);
 
         if (by) this.addScore(by, a.score);
 
@@ -2348,7 +2436,11 @@ export class Lobby extends DurableObject {
             if (!touches(p.x, p.z, SHIP.radius)) continue;
 
             beam.hit.add(s);
-            this.event(["lh", round2(p.x), round2(p.z)]);
+
+            // (Where a cloaked ship was hit is for its pilot only.)
+            if (s.cloaked) this.eventFor(s, ["lh", round2(p.x), round2(p.z)]);
+            else this.event(["lh", round2(p.x), round2(p.z)]);
+
             this.damageShip(s, LASER.shipDamage, beam.owner, now);
         }
     }
@@ -2583,7 +2675,7 @@ export class Lobby extends DurableObject {
     }
 
     isPresent(ship, now) {
-        return ship.alive && ship.st === 1 && now - ship.stateAt < SHIP.presentMs;
+        return ship.alive && now - ship.playingAt < SHIP.presentMs;
     }
 
     presentShips(now) {
@@ -2605,7 +2697,7 @@ export class Lobby extends DurableObject {
     sameClan(a, b) {
         if (!a || !b || a === b) return false;
 
-        return noFriendlyFire(a.name, b.name);
+        return noFriendlyFire(a.clanName, b.clanName);
     }
 
     // Can `owner`'s weapons hit ship `s`? Not their own ship, not a
@@ -2639,15 +2731,22 @@ export class Lobby extends DurableObject {
         if (attacker && attacker !== ship) {
             ship.lastHitBy = attacker;
             ship.lastHitAt = now;
-            this.addScore(attacker, POINTS.shipHit);
+
+            const worth = this.pvpWorth(attacker, ship);
+            if (worth > 0) this.addScore(attacker, Math.round(POINTS.shipHit * worth));
         }
 
         const p = this.shipPosition(ship, now);
+        const hit = ["sh", ship.id, ship.hull, attacker ? attacker.id : "", round2(p.x), round2(p.z)];
 
-        // A cloaked ship's hit doesn't give away where it is.
-        this.event(ship.cloaked && ship.hull > 0
-            ? ["sh", ship.id, ship.hull, attacker ? attacker.id : "", null, null]
-            : ["sh", ship.id, ship.hull, attacker ? attacker.id : "", round2(p.x), round2(p.z)]);
+        // A cloaked ship's hit isn't announced: only the pilot, and
+        // whoever shot them (without where it was), hear of it.
+        if (ship.cloaked && ship.hull > 0) {
+            this.eventFor(ship, hit);
+            if (attacker && attacker !== ship) this.eventFor(attacker, [...hit.slice(0, 4), null, null]);
+        } else {
+            this.event(hit);
+        }
 
         if (ship.hull > 0) return;
 
@@ -2670,11 +2769,35 @@ export class Lobby extends DurableObject {
         ship.lastHitBy = null;
 
         if (killer) {
-            killer.kills++;
-            this.addScore(killer, POINTS.shipKill);
+            const worth = this.pvpWorth(killer, ship);
+            const key = this.pvpKey(killer, ship);
+
+            this.killCounts.set(key, (this.killCounts.get(key) ?? 0) + 1);
+
+            if (worth > 0) {
+                killer.kills++;
+                this.addScore(killer, Math.round(POINTS.shipKill * worth));
+            }
         }
 
         this.event(["sk", ship.id, killer ? killer.id : "", round2(p.x), round2(p.z), cause ?? ""]);
+    }
+
+    // Kills of `victim` by `attacker` this round are counted under this
+    // key (by browser, so reconnecting doesn't reset it).
+    pvpKey(attacker, victim) {
+        const who = (s) => s.token ?? `id-${s.id}`;
+        return `${who(attacker)}>${who(victim)}`;
+    }
+
+    // What hitting or killing `victim` is worth to `attacker`, from 1
+    // (full points) down to 0 (see PVP).
+    pvpWorth(attacker, victim) {
+        if (attacker.address && attacker.address === victim.address) return 0;
+
+        const kills = this.killCounts.get(this.pvpKey(attacker, victim)) ?? 0;
+
+        return PVP.repeatKillValue[kills] ?? 0;
     }
 
     respawn(ship, now) {
@@ -2696,11 +2819,18 @@ export class Lobby extends DurableObject {
         ship.hull = SHIP.hull;
         ship.shieldUntil = now + SHIP.spawnShieldMs;
         ship.hitCooldownUntil = 0;
+        ship.moveBudget = MOVE.maxSpeed * MOVE.graceSec + MOVE.slack;
         ship.dirty = true;
         ship.spawnMoved = true;
 
         // A fresh start: no history from where it was before.
         if (ship.trail) ship.trail.length = 0;
+
+        // A clan tag changed since the last spawn counts from now on.
+        if (ship.clanName !== ship.name) {
+            ship.clanName = ship.name;
+            this.broadcast({ t: "name", id: ship.id, name: ship.name, cn: ship.clanName });
+        }
     }
 
     // Nothing dangerous right here (for putting a returning pilot back
@@ -2854,7 +2984,15 @@ export class Lobby extends DurableObject {
                 if (Math.hypot(c.x - p.x, c.z - p.z) >= SHIP.radius + CRYSTALS.radius) continue;
 
                 this.crystals.splice(this.crystals.indexOf(c), 1);
-                this.event(["cc", c.id, ship.id]);
+
+                // Everyone sees a cloaked ship's crystal go, but not who
+                // took it.
+                if (ship.cloaked) {
+                    this.event(["cc", c.id, ""]);
+                    this.eventFor(ship, ["cc", c.id, ship.id]);
+                } else {
+                    this.event(["cc", c.id, ship.id]);
+                }
 
                 this.addScore(ship, POINTS.crystal);
                 ship.hull = Math.min(SHIP.hull, ship.hull + 1);
@@ -2973,13 +3111,21 @@ export class Lobby extends DurableObject {
         this.events.push(e);
     }
 
+    // An event for one pilot only.
+    eventFor(ship, e) {
+        const list = this.privateEvents.get(ship);
+
+        if (list) list.push(e);
+        else this.privateEvents.set(ship, [e]);
+    }
+
     snapshotMessage(now) {
         const players = [];
 
         for (const s of this.ships.values()) {
             let flags = 0;
 
-            if (s.alive && s.st === 1 && now - s.stateAt < SHIP.presentMs) flags |= 1;
+            if (this.isPresent(s, now)) flags |= 1;
             if (now < s.warpUntil) flags |= 2;
             if (now < s.shieldUntil) flags |= 4;
 
@@ -2988,9 +3134,10 @@ export class Lobby extends DurableObject {
             const p = s.alive ? this.shipPosition(s, now) : s;
 
             // Cloaked: listed (so it isn't forgotten), but with nothing
-            // that would show where it is. Flag 8 = cloaked.
+            // that would show where it is, or when it gets hurt (always
+            // full hull). Flag 8 = cloaked.
             if (s.cloaked && s.alive) {
-                players.push([s.id, 0, 0, 0, 0, 0, 0, 8, 0, s.design ?? 0, s.hull]);
+                players.push([s.id, 0, 0, 0, 0, 0, 0, 8, 0, s.design ?? 0, SHIP.hull]);
                 continue;
             }
 
@@ -3219,6 +3366,23 @@ function finite(value, min, max) {
     return Math.min(max, Math.max(min, n));
 }
 
+// An IP address, or for IPv6 its /64 (one household's network: each
+// device there can have its own address), or null.
+function addressGroup(ip) {
+    if (typeof ip !== "string" || ip === "") return null;
+    if (!ip.includes(":")) return ip;
+
+    const [head, tail] = ip.toLowerCase().split("::");
+    const front = head ? head.split(":") : [];
+    const back = tail ? tail.split(":") : [];
+    const middle = tail === undefined ? [] : Array(Math.max(0, 8 - front.length - back.length)).fill("0");
+
+    return [...front, ...middle, ...back]
+        .slice(0, 4)
+        .map((part) => part.replace(/^0+(?=.)/, ""))
+        .join(":") + "::/64";
+}
+
 function readAttachment(ws) {
     try {
         return ws.deserializeAttachment() ?? null;
@@ -3253,4 +3417,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { MAP_NAMES, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };
+export const _internals = { addressGroup, PVP, MAP_NAMES, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };

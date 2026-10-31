@@ -1035,6 +1035,38 @@ test("UFO (online): the server's visit is drawn, shots are absorbed, and it leav
     stopGames();
 });
 
+test("UFO: a solo visit going on when the game gets online leaves the usual way, not in a blink", async () => {
+    const server = await loadWorker();
+    server.down = true;
+
+    const game = await loadGame(server);
+    const { t } = game;
+    await waitFor(() => t.state.running, 3000, "running");
+
+    // A solo visit, hovering.
+    t.ufo.soloDue = [t.state.matchTime];
+    await play(game, 3000);
+    assert.equal(t.ufo.phase, "observe");
+
+    // The connection comes through.
+    server.down = false;
+
+    const phases = [];
+    let online = false;
+
+    await play(game, 9000, () => {
+        if (t.net.active) online = true;
+        if (online && phases.at(-1) !== t.ufo.phase) phases.push(t.ufo.phase);
+    });
+
+    assert.ok(online, "went online");
+    assert.ok(phases.includes("charge") && phases.includes("depart"), `charged up and departed (${phases.join(" → ")})`);
+    assert.equal(t.ufo.phase, "gone", "and then it's gone");
+    assert.equal(t.ufo.group.visible, false);
+
+    stopGames();
+});
+
 // ---- Ship designs, damage and explosions ---------------------------
 
 test("ships: pick a design on the title screen (remembered); the ship shows damage as the hull drops", async () => {

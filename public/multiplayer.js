@@ -144,6 +144,7 @@ export class Multiplayer {
         this.welcomed = false;
         this.selfId = null;
         this.selfName = null;
+        this.selfClan = null;
         this.selfColor = null;
         this.lobbyId = loadLobbyId();
 
@@ -276,9 +277,16 @@ export class Multiplayer {
 
     // True if your weapons can't hurt that pilot (the server enforces
     // it): they wear your clan tag ([KO]...), or one of you wears the
-    // peace tag [PASS].
+    // peace tag [PASS]. A tag changed mid-round only counts from that
+    // pilot's next respawn, so this goes by the server's "cn" (the name
+    // whose tag counts) when it has sent one.
     isTeammate(id) {
-        return noFriendlyFire(this.selfName ?? this.name, this.nameOf(String(id)));
+        const theirs = this.roster.get(String(id));
+
+        return noFriendlyFire(
+            this.selfClan ?? this.selfName ?? this.name,
+            theirs ? theirs.clan ?? theirs.name : this.nameOf(String(id))
+        );
     }
 
     // The ship design another pilot flies (0 if unknown).
@@ -690,6 +698,7 @@ export class Multiplayer {
         this.failures = 0;
         this.selfId = String(data.id);
         this.selfName = String(data.name ?? this.name);
+        this.selfClan = typeof data.cn === "string" ? data.cn : this.selfName;
 
         // The server turned our saved callsign down (its rules can be
         // stricter than an older copy of this page's): use its choice.
@@ -874,8 +883,11 @@ export class Multiplayer {
         const id = String(p.id);
         if (id === this.selfId) return;
 
+        const name = String(p.name ?? "PILOT").slice(0, FULL_NAME_MAX);
+
         this.roster.set(id, {
-            name: String(p.name ?? "PILOT").slice(0, FULL_NAME_MAX),
+            name,
+            clan: typeof p.cn === "string" ? p.cn.slice(0, FULL_NAME_MAX) : name,
             color: typeof p.color === "string" ? p.color : "#ffffff"
         });
 
@@ -1502,8 +1514,11 @@ export class Multiplayer {
 
         if (!name) return;
 
+        const clan = typeof data.cn === "string" ? data.cn.slice(0, FULL_NAME_MAX) : name;
+
         if (id === this.selfId) {
             this.selfName = name;
+            this.selfClan = clan;
 
             if (data.rejected) {
                 // The server's copy stands; show it, and say why.
@@ -1529,6 +1544,7 @@ export class Multiplayer {
         if (!info) return;
 
         info.name = name;
+        info.clan = clan;
 
         const remote = this.remotes.get(id);
 
@@ -1876,9 +1892,23 @@ function defaultServerUrl() {
         return null;
     }
 
-    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    // Always encrypted (the pilot token travels in the address), even
+    // from a page opened as http://; plain ws: only for wrangler dev on
+    // this computer or the home network, which has no wss:.
+    const scheme = location.protocol === "https:" || !isLocalHost(location.hostname)
+        ? "wss:"
+        : "ws:";
 
     return `${scheme}//${location.host}/api/ws`;
+}
+
+function isLocalHost(hostname) {
+    const host = String(hostname ?? "").toLowerCase().replace(/^\[|\]$/g, "");
+
+    return host === "localhost" || host === "::1" || host.endsWith(".local") ||
+        /^(127|10)\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(host);
 }
 
 function offlineRequested() {
@@ -1964,4 +1994,4 @@ function saveLobbyId(id) {
 }
 
 // Exposed for tests.
-export const _internals = { samplePose, sampleRocket, CONFIG, PROTOCOL_VERSION, CLOSE_REPLACED };
+export const _internals = { samplePose, sampleRocket, isLocalHost, CONFIG, PROTOCOL_VERSION, CLOSE_REPLACED };
