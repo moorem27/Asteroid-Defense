@@ -10834,15 +10834,13 @@ function applyNetEvent(e, lag) {
                 createShipExplosion(point(e[3], e[4]), multiplayer?.designOf(e[1]) ?? 0);
 
                 if (netSelf(e[2])) {
-                    // (Repeat kills of the same pilot are worth less, down
-                    // to nothing: the server says how much.)
+                    // (Repeat kills of the same pilot are worth less: the
+                    // server says how much.)
                     const points = Number(e[7]);
 
-                    $("message").textContent = !Number.isFinite(points)
-                        ? `${netName(e[1])} DESTROYED`
-                        : points > 0
-                            ? `${netName(e[1])} DESTROYED · +${points.toLocaleString("en-US")}`
-                            : `${netName(e[1])} DESTROYED · NO POINTS`;
+                    $("message").textContent = points > 0
+                        ? `${netName(e[1])} DESTROYED · +${points.toLocaleString("en-US")}`
+                        : `${netName(e[1])} DESTROYED`;
                 }
             }
             break;

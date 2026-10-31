@@ -390,12 +390,9 @@ What's already protected, in the code:
 - **The cloak hides the ship from everyone else:** no event gives its position
   or names it (hits, laser sparks, crystals it picks up, rocks its warp bubble
   clears). Others can still see the crystal vanish or the mine go off.
-- **Score farming doesn't pay:** pilots on the same IP address (or IPv6 /64)
-  score nothing off each other, and repeat kills of the same pilot in a round
-  are worth full, half, a quarter, then nothing. (Pilots tested side by side
-  on one computer with `wrangler dev` don't count as the same address, so
-  they can score off each other; the drop-off for repeat kills still
-  applies.)
+- **Score farming pays less:** repeat kills of the same pilot in a round are
+  worth full, then half, then a quarter from then on (hits on them too). Every
+  hit and kill still scores, including between pilots on the same connection.
 - **Floods are cut off:** a connection that keeps sending messages faster than
   the game ever does, or sends an oversized one, is closed (every message
   counts toward Cloudflare's daily allowance, even ignored ones).

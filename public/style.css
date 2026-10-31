@@ -247,18 +247,20 @@ pointer-events: none;
 /* ============================================================
    GAME LOG (top left, under the score, online only)
    Each line flashes in, stays a few seconds, then fades (game.js
-   removes it); the newest is on top.
+   removes it); the newest is on top. A long one wraps onto a second
+   row (indented) rather than being cut off; names stay in one piece.
    ============================================================ */
 
-.game-log { margin: calc(8 * var(--u)) 0 0; padding: 0; list-style: none; max-width: 32ch; font-size: calc(8 * var(--u)); line-height: 1.8; text-align: left; }
+.game-log { margin: calc(8 * var(--u)) 0 0; padding: 0; list-style: none; max-width: 100%; font-size: calc(8 * var(--u)); line-height: 1.8; text-align: left; }
 
 .game-log[hidden] { display: none; }
 
-.game-log li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: game-log-line 5s ease-out forwards; }
+.game-log li { margin-bottom: calc(3 * var(--u)); padding-left: 2ch; text-indent: -2ch; animation: game-log-line 5s ease-out forwards; }
 
-.game-log .log-name { display: inline-block; max-width: 14ch; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+/* (Only a name too long for the whole width is shortened.) */
+.game-log .log-name { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-indent: 0; vertical-align: bottom; }
 
-.game-log .log-weapon { color: var(--cyan); }
+.game-log .log-weapon { color: var(--cyan); white-space: nowrap; }
 
 @keyframes game-log-line {
     0% { opacity: 0; text-shadow: 0 0 14px white; }

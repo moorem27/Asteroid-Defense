@@ -261,11 +261,12 @@ const POINTS = {
 };
 
 // Score farming (one player shooting their own second ship over and
-// over). Pilots on the same IP address (or IPv6 /64) score nothing off
-// each other, and each kill of the same pilot in a round is worth less:
-// full, half, a quarter, then nothing (hits on them follow suit).
+// over). Each kill of the same pilot in a round is worth less: full,
+// half, then a quarter from then on (hits on them follow suit). Every
+// hit and kill still scores something.
 const PVP = {
-    repeatKillValue: [1, 0.5, 0.25]
+    repeatKillValue: [1, 0.5],
+    repeatKillFloor: 0.25
 };
 
 const WARP = {
@@ -1268,8 +1269,6 @@ export class Lobby extends DurableObject {
             // last (re)spawn, so a rename mid-fight can't shield anyone.
             clanName: info.name,
 
-            // The connection's address, grouped (see PVP).
-            address: addressGroup(info.ip),
 
             x: 0,
             z: 0,
@@ -2745,8 +2744,7 @@ export class Lobby extends DurableObject {
             ship.lastHitAt = now;
             ship.lastHitWeapon = weapon;
 
-            const worth = this.pvpWorth(attacker, ship);
-            if (worth > 0) this.addScore(attacker, Math.round(POINTS.shipHit * worth));
+            this.addScore(attacker, Math.round(POINTS.shipHit * this.pvpWorth(attacker, ship)));
         }
 
         const p = this.shipPosition(ship, now);
@@ -2792,11 +2790,9 @@ export class Lobby extends DurableObject {
 
             this.killCounts.set(key, (this.killCounts.get(key) ?? 0) + 1);
 
-            if (worth > 0) {
-                points = Math.round(POINTS.shipKill * worth);
-                killer.kills++;
-                this.addScore(killer, points);
-            }
+            points = Math.round(POINTS.shipKill * worth);
+            killer.kills++;
+            this.addScore(killer, points);
         }
 
         // [ship, killer, x, z, cause, weapon, points for the kill]
@@ -2810,14 +2806,13 @@ export class Lobby extends DurableObject {
         return `${who(attacker)}>${who(victim)}`;
     }
 
-    // What hitting or killing `victim` is worth to `attacker`, from 1
-    // (full points) down to 0 (see PVP).
+    // What hitting or killing `victim` is worth to `attacker`: 1 (full
+    // points) for a pilot they haven't destroyed yet this round, less
+    // for one they have (see PVP).
     pvpWorth(attacker, victim) {
-        if (attacker.address && attacker.address === victim.address) return 0;
-
         const kills = this.killCounts.get(this.pvpKey(attacker, victim)) ?? 0;
 
-        return PVP.repeatKillValue[kills] ?? 0;
+        return PVP.repeatKillValue[kills] ?? PVP.repeatKillFloor;
     }
 
     respawn(ship, now) {
@@ -3405,8 +3400,8 @@ function finite(value, min, max) {
 
 // An IP address, or for IPv6 its /64 (one household's network: each
 // device there can have its own address), or null. Also null for this
-// computer's own address (wrangler dev), so pilots tested side by side
-// on one machine count as different players; real connections through
+// computer's own address (wrangler dev), so testing with more than
+// MAX_PER_IP windows on one machine works; real connections through
 // Cloudflare never come from there.
 function addressGroup(ip) {
     if (typeof ip !== "string" || ip === "") return null;

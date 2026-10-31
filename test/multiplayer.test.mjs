@@ -2257,9 +2257,10 @@ test("cloak: hits, laser sparks, crystal pickups and warp kills don't give a clo
     shutdownAll();
 });
 
-test("score farming: nothing off a pilot on your own address; repeat kills are worth less", async () => {
+test("pvp points: every hit and kill scores, for everyone (same address too); repeat kills are worth less, never nothing", async () => {
     const server = await loadWorker();
 
+    // Two pilots on one home connection, and two on another.
     server.clientIp = "203.0.113.7";
     const a = await rawClient(server, "ALPHA");
     const b = await rawClient(server, "BRAVO");
@@ -2276,25 +2277,37 @@ test("score farming: nothing off a pilot on your own address; repeat kills are w
     const lobby = quietLobby(server);
     const [sa, sb, sc, sd, se] = [a, b, c, d, e].map((x) => shipOf(lobby, x));
 
+    const hit = (victim, attacker) => {
+        Object.assign(victim, { alive: true, hull: 3, hitCooldownUntil: 0, shieldUntil: 0, warpUntil: 0 });
+        const before = attacker.score;
+        lobby.damageShip(victim, 1, attacker, Date.now(), null, "blaster");
+        return attacker.score - before;
+    };
+
     const kill = (victim, killer) => {
         Object.assign(victim, { alive: true, hull: 1, hitCooldownUntil: 0, shieldUntil: 0, warpUntil: 0 });
         const before = killer.score;
-        lobby.damageShip(victim, 1, killer, Date.now());
+        lobby.damageShip(victim, 1, killer, Date.now(), null, "blaster");
         return killer.score - before;
     };
 
-    assert.equal(kill(sb, sa), 0, "same IPv4 address: no points");
-    assert.equal(sa.kills, 0, "and no kill counted");
-    assert.equal(kill(sc, se), 0, "same IPv6 /64: no points");
+    assert.equal(hit(sb, sa), 200, "a hit on a pilot at the same address scores");
+    assert.equal(kill(sb, sa), 2700, "and so does the kill");
+    assert.equal(kill(sc, se), 2700, "same IPv6 network too");
 
-    // Hit + kill: 2700, then half, a quarter, then nothing.
+    // Hit + kill: 2700, then half, then a quarter from then on.
     const values = [];
     for (let i = 0; i < 5; i++) values.push(kill(sa, sd));
 
-    assert.deepEqual(values, [2700, 1350, 675, 0, 0]);
-    assert.equal(sd.kills, 3);
+    assert.deepEqual(values, [2700, 1350, 675, 675, 675]);
+    assert.equal(sd.kills, 5, "every kill counts");
+    assert.equal(hit(sa, sd), 50, "hits on them: a quarter too");
 
     assert.equal(kill(sc, sd), 2700, "someone else: full points");
+
+    // The kill event says what it was worth (never "no points").
+    await waitFor(() => d.eventsOf("sk").length >= 7, 1000, "kill events");
+    assert.ok(d.eventsOf("sk").every((k) => k[7] > 0), "every kill worth something");
 
     shutdownAll();
 });
@@ -2337,24 +2350,6 @@ test("game log: a kill says what weapon did it and what it was worth; other deat
     lobby.damageShip(sa, 1, null, Date.now(), "mine");
     kill = await lastKill();
     assert.deepEqual([kill[1], kill[2], kill[5], kill[6], kill[7]], [a.id, "", "mine", "", 0]);
-
-    shutdownAll();
-});
-
-test("score farming: pilots tested side by side on this computer (wrangler dev) still score off each other", async () => {
-    const server = await loadWorker();
-
-    server.clientIp = "127.0.0.1";
-    const a = await rawClient(server, "ALPHA");
-    const b = await rawClient(server, "BRAVO");
-    const lobby = quietLobby(server);
-    const [sa, sb] = [a, b].map((x) => shipOf(lobby, x));
-
-    Object.assign(sb, { hull: 1, hitCooldownUntil: 0, shieldUntil: 0 });
-    lobby.damageShip(sb, 1, sa, Date.now());
-
-    assert.equal(sa.score, 2700);
-    assert.equal(sa.kills, 1);
 
     shutdownAll();
 });
