@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy · Asteroid Defense</title>
+    <link rel="icon" href="./favicon.ico" sizes="any">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+
+    <!-- The game's privacy notice. Plain HTML, no scripts. Keep it in
+         step with what the game stores (game.js, multiplayer.js,
+         src/index.js) and update the date when it changes. -->
+    <style>
+        :root {
+            --cyan: #42f5f2;
+            --pink: #ff3f9f;
+            --background: #050713;
+            --panel: rgba(7, 12, 35, 0.92);
+            --text: #d8e6ff;
+        }
+
+        body {
+            margin: 0;
+            padding: 2rem 1rem 4rem;
+            background: var(--background);
+            color: var(--text);
+            font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+
+        main {
+            max-width: 46rem;
+            margin: 0 auto;
+            padding: 1.5rem 1.75rem 2rem;
+            background: var(--panel);
+            border: 1px solid rgba(66, 245, 242, 0.35);
+            border-radius: 6px;
+        }
+
+        h1 { margin: 0 0 0.25rem; color: white; font-size: 1.7rem; letter-spacing: 0.03em; }
+        h1 span { color: var(--pink); }
+        h2 { margin: 2rem 0 0.5rem; color: var(--cyan); font-size: 1.15rem; }
+
+        a { color: var(--cyan); }
+        code { color: white; font-size: 0.9em; }
+        li { margin: 0.3rem 0; }
+
+        .updated { margin: 0 0 1.5rem; color: #8fa3c9; font-size: 0.9rem; }
+
+        .summary {
+            padding: 0.9rem 1.1rem;
+            border-left: 3px solid var(--cyan);
+            background: rgba(66, 245, 242, 0.06);
+        }
+
+        .back { display: inline-block; margin-top: 2rem; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>ASTEROID <span>DEFENSE</span> · Privacy</h1>
+    <p class="updated">Last updated 30 October 2026</p>
+
+    <p class="summary">
+        <strong>The short version:</strong> Asteroid Defense is a free hobby
+        game. There are no accounts, ads, analytics or trackers, and nothing is
+        sold or shared. The game keeps only what it needs to run: your callsign
+        and scores, and a random ID in your browser.
+    </p>
+
+    <h2>Who runs this game</h2>
+    <p>
+        Asteroid Defense (amaxcon.com) is run by Matthew Moore. For any question
+        about this notice or your data, email
+        <strong>amaxconasteroiddefense@gmail.com</strong>.
+    </p>
+
+    <h2>What's stored in your browser</h2>
+    <p>
+        The game saves a few things in your browser's local storage, on your
+        own device, so it remembers you between visits:
+    </p>
+    <ul>
+        <li>your callsign (<code>asteroidDefensePilotName</code>)</li>
+        <li>
+            a random pilot ID (<code>asteroidDefensePilotToken</code>), so the
+            game recognizes your browser when you reconnect: you keep your
+            score in a round, and a reload isn't counted as a second pilot
+        </li>
+        <li>the lobby you were last in (<code>asteroidDefenseLobby</code>)</li>
+        <li>the ship you chose (<code>asteroidDefenseShip</code>)</li>
+        <li>your solo high score (<code>asteroidDefenseHighScore</code>)</li>
+        <li>
+            which all-time records are yours (<code>asteroidDefenseMyRecords</code>),
+            so the list can mark them "YOU"
+        </li>
+    </ul>
+    <p>
+        You can remove all of this at any time by clearing this site's data in
+        your browser's settings. The game itself sets no cookies.
+    </p>
+
+    <h2>What the game server keeps</h2>
+    <p>Only when you play online:</p>
+    <ul>
+        <li>
+            <strong>During a round:</strong> your callsign, colour, ship,
+            position, score, kills and deaths, and your random pilot ID. Other
+            pilots in your lobby see your callsign, colour, ship, position,
+            score, kills and deaths (not your pilot ID).
+        </li>
+        <li>
+            <strong>If you leave or your connection drops:</strong> your score
+            is kept until the round ends, so you can rejoin and carry on. When
+            a lobby empties, everything about its round is deleted within a few
+            minutes.
+        </li>
+        <li>
+            <strong>The all-time top 10:</strong> if your score makes the list,
+            your callsign, colour, score, kills and the date are shown publicly
+            on the site, for as long as the score stays in the top 10. With it
+            the server keeps a private key based on your pilot ID (so each pilot
+            has one entry per round); that key is never shown to anyone.
+        </li>
+        <li>
+            <strong>Your IP address:</strong> used while you're connected to
+            limit how many connections can come from one address (to prevent
+            abuse). The game doesn't store it.
+        </li>
+    </ul>
+    <p>
+        The game doesn't collect your email address, real name, location or
+        any payment details.
+    </p>
+
+    <h2>Hosting: Cloudflare</h2>
+    <p>
+        The game is hosted by Cloudflare. Like any web host, Cloudflare handles
+        your IP address and the details of each request to deliver the site and
+        protect it from attacks, and it may set a security cookie when it needs
+        to check that a visitor isn't a bot. The game server's logs, which can
+        include your IP address and approximate location, are kept by
+        Cloudflare for a few days so problems can be fixed. Cloudflare runs a
+        worldwide network, so your data may be handled outside your country.
+        See <a href="https://www.cloudflare.com/privacypolicy/" rel="noopener">Cloudflare's privacy policy</a>.
+    </p>
+
+    <h2>Why this data is used</h2>
+    <p>
+        Only to run the game you've chosen to play, keep it fair, and protect
+        it from abuse. For visitors in the EU and UK, the legal basis is
+        legitimate interests (Article 6(1)(f) GDPR). The browser storage above
+        is strictly necessary for the game to work, which is why there's no
+        consent banner.
+    </p>
+
+    <h2>Callsigns</h2>
+    <p>
+        Your callsign is shown to other pilots and, if you make the top 10, to
+        everyone who visits. <strong>Please don't use your real name or anything
+        that identifies you.</strong> Offensive callsigns are blocked, and a
+        callsign can be removed from the top 10 if it breaks these rules.
+    </p>
+
+    <h2>Children</h2>
+    <p>
+        The game isn't aimed at children under 13 and doesn't knowingly collect
+        personal information from them. If you think a child has put personal
+        information into a callsign (for example a real name in the top 10),
+        email us and it will be removed.
+    </p>
+
+    <h2>Your choices and rights</h2>
+    <ul>
+        <li>You can clear the game's browser storage at any time (see above).</li>
+        <li>
+            You can ask what data the game holds about you, or ask for it to be
+            corrected or deleted (for example, a top-10 entry), by emailing
+            amaxconasteroiddefense@gmail.com. Requests are answered within one
+            month.
+        </li>
+        <li>
+            In the EU and UK you have the right to access, correct and erase
+            your data and to object to its use, and you can complain to your
+            local data protection authority.
+        </li>
+        <li>
+            California residents: the game doesn't sell or share personal
+            information.
+        </li>
+    </ul>
+
+    <h2>Changes</h2>
+    <p>
+        If the game starts handling data differently, this page will be updated
+        and the date at the top will change.
+    </p>
+
+    <a class="back" href="./">← Back to the game</a>
+</main>
+</body>
+</html>

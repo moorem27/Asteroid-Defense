@@ -491,6 +491,14 @@ body.results-open #bottom-hud {
 
 .callsign-hint { margin-top: calc(10 * var(--u)); color: var(--cyan); font-size: calc(7 * var(--u)); line-height: 1.7; opacity: 0.85; }
 
+/* Under the callsign box: don't use your real name. */
+.callsign-warning { margin-top: calc(10 * var(--u)); color: var(--yellow); font-size: calc(7 * var(--u)); line-height: 1.7; }
+
+/* The link to privacy.html (start screen, callsign box). */
+.privacy-link { color: inherit; text-decoration: underline; text-underline-offset: 0.25em; pointer-events: auto; }
+
+.privacy-link:hover, .privacy-link:focus-visible { color: white; }
+
 .callsign-error { min-height: 2.4em; margin-top: calc(10 * var(--u)); color: var(--yellow); font-size: calc(8 * var(--u)); line-height: 1.6; }
 
 .callsign-buttons { display: flex; gap: calc(10 * var(--u)); margin-top: calc(6 * var(--u)); }

@@ -159,6 +159,10 @@ class Storage {
         this.data.set(key, structuredClone(value));
     }
 
+    async delete(key) {
+        return this.data.delete(key);
+    }
+
     async getAlarm() {
         return this.alarmAt;
     }

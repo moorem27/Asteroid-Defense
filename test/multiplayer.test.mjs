@@ -1218,6 +1218,33 @@ test("lobby restart (a deploy): pilots who come back within two minutes carry on
     shutdownAll();
 });
 
+test("privacy: an empty lobby's saved round (pilot IDs, scores) is deleted once nobody can come back to it", async () => {
+    const server = await loadWorker();
+    const a = await rawClient(server, "ALPHA", { token: TOKEN });
+    const entry = [...server.env.LOBBY.objects.values()][0];
+    const lobby = entry.instance;
+
+    shipOf(lobby, a).score = 1234;
+    a.ws.close();
+    await waitFor(() => entry.state.sockets.length === 0, 1000, "left");
+
+    const saved = await entry.state.storage.get("resume");
+    assert.ok(saved?.scores.some((s) => s[0] === TOKEN), "saved for a quick return");
+
+    // The heartbeat alarm while it can still be resumed: kept, and an
+    // alarm set for when it expires.
+    await lobby.alarm();
+    assert.ok(await entry.state.storage.get("resume"), "kept while it can be resumed");
+    assert.ok(entry.state.storage.alarmAt >= saved.savedAt + server.mod._internals.RESUME_GRACE_MS, "checked again when it expires");
+
+    // Expired: gone.
+    await lobby.forgetStaleResume(saved.savedAt + server.mod._internals.RESUME_GRACE_MS + 1);
+    assert.equal(await entry.state.storage.get("resume"), undefined, "deleted");
+    assert.equal(lobby.resume, null);
+
+    shutdownAll();
+});
+
 test("same browser back later: joins where the players are, not its old empty lobby", async () => {
     const server = await loadWorker();
 

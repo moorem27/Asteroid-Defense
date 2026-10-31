@@ -1122,7 +1122,32 @@ export class Lobby extends DurableObject {
 
         if (this.ctx.getWebSockets().length > 0) {
             await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+            return;
         }
+
+        // Empty: the saved round (pilot IDs and scores) is deleted once
+        // nobody can come back to it.
+        await this.forgetStaleResume(Date.now());
+    }
+
+    // Delete the saved round if it can no longer be resumed (see
+    // RESUME_GRACE_MS); otherwise check again when it expires.
+    async forgetStaleResume(now) {
+        const saved = this.resume;
+        if (!saved) return;
+
+        const expiresAt = Math.min(
+            (Number(saved.savedAt) || 0) + RESUME_GRACE_MS,
+            Number(saved.round?.endsAt) || 0
+        );
+
+        if (now < expiresAt) {
+            await this.ctx.storage.setAlarm(expiresAt + 1000);
+            return;
+        }
+
+        this.resume = null;
+        await this.ctx.storage.delete("resume");
     }
 
     isReplaced(ws) {
@@ -3456,4 +3481,4 @@ function sanitizeToken(raw) {
 }
 
 // Exposed for tests.
-export const _internals = { addressGroup, PVP, MAP_NAMES, mapForRound, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };
+export const _internals = { addressGroup, PVP, MAP_NAMES, mapForRound, RESUME_GRACE_MS, segmentHit, LASER, ROCKET, BULLET, SHIP, POINTS, ROUND_MS, INTERMISSION_MS, RECORDS_SIZE, CLOSE_REPLACED, UFO_VISITS };
